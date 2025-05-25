@@ -86,4 +86,4 @@ For production, deploy your Next.js application to a platform like Vercel or Fir
 *   Use the deployed URL for your WhatsApp webhook (e.g., `https://your-app-url.com/api/whatsapp/webhook`).
 *   Remember to set up all your environment variables in your deployment platform's settings.
 *   Configure a cron job (e.g., Vercel Cron Jobs, GitHub Actions, or a third-party service) to call the `https://your-app-url.com/api/cron/daily-summary` endpoint daily at your desired time (e.g., 7 AM).
-```
+```# dentcheck
