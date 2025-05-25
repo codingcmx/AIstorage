@@ -2,9 +2,12 @@
 "use server";
 
 import type { SenderType } from '@/types/chat';
+// We keep recognizeIntent here for the web UI, but WhatsApp flow uses it directly.
 import { recognizeIntent } from '@/ai/flows/intent-recognition';
-import { generateDailySummary } from '@/ai/flows/daily-summary';
-import type { GenerateDailySummaryInput } from '@/ai/flows/daily-summary';
+import { generateDailySummary, GenerateDailySummaryInput } from '@/ai/flows/daily-summary';
+import { getAppointmentsFromSheet } from '@/services/google-sheets-service';
+import { format } from 'date-fns';
+
 
 interface HandleUserMessageResult {
   responseText: string;
@@ -12,108 +15,103 @@ interface HandleUserMessageResult {
   entities?: Record<string, any>;
 }
 
-// Helper function to generate a unique ID
-const generateId = () => Math.random().toString(36).substr(2, 9);
-
 export async function handleUserMessage(messageText: string, senderType: SenderType): Promise<HandleUserMessageResult> {
+  // This function is now primarily for the web UI.
+  // WhatsApp messages are handled by the webhook and processWhatsAppMessageFlow.
   try {
-    // Simulate doctor commands locally if they are simple and don't need complex entity extraction
-    if (senderType === 'doctor') {
-      if (messageText.toLowerCase().startsWith('/pause bookings till')) {
-        const date = messageText.substring('/pause bookings till'.length).trim();
-        return { responseText: `Okay, I've paused bookings until ${date}. Patients will be notified.` };
-      }
-      if (messageText.toLowerCase() === '/resume bookings') {
-        return { responseText: "Bookings have been resumed. Patients can now book appointments." };
-      }
-      if (messageText.toLowerCase() === '/cancel all meetings today') {
-        return { responseText: "All meetings for today have been cancelled. Affected patients will be notified." };
-      }
-      if (messageText.toLowerCase().startsWith('/cancel') && messageText.includes('appointment')) {
-         // More complex cancellation like /cancel Anika Sharma appointment would ideally use intent recognition
-         // For this demo, we can use a simplified response or pass it to recognizeIntent
-         const parts = messageText.split(' ');
-         const patientName = parts.length > 2 && !parts[1].startsWith('/') ? parts.slice(1, -1).join(' ') : "Unknown Patient";
-         if (patientName !== "Unknown Patient") {
-            return { responseText: `Appointment for ${patientName} has been cancelled.` };
-         }
-      }
-    }
+    // For the web UI, we'll use the existing intent recognition and simulate responses.
+    // Actual booking/management for WhatsApp happens in its dedicated flow.
 
     const { intent, entities } = await recognizeIntent({ message: messageText, senderType });
 
     let responseText = "I'm not sure how to help with that. Can you try rephrasing?";
 
-    // Simulate responses based on recognized intent
-    // In a real system, these would trigger further actions (DB updates, Calendar API calls, etc.)
     switch (intent) {
       case 'book_appointment':
         responseText = `Okay, I'll help you book an appointment.`;
         if (entities.reason) responseText += ` Reason: ${entities.reason}.`;
         if (entities.date) responseText += ` Date: ${entities.date}.`;
         if (entities.time) responseText += ` Time: ${entities.time}.`;
-        responseText += `\n\nPlease confirm these details or provide any missing information.`;
+        responseText += `\n\n(Simulated for web UI) Please confirm these details or provide any missing information. For actual booking, please use WhatsApp.`;
         break;
       case 'reschedule_appointment':
         responseText = `Sure, I can help you reschedule.`;
         if (entities.date) responseText += ` New date: ${entities.date}.`;
         if (entities.time) responseText += ` New time: ${entities.time}.`;
-        responseText += `\n\nIs this correct?`;
+        responseText += `\n\n(Simulated for web UI) Is this correct? For actual rescheduling, please use WhatsApp.`;
         break;
       case 'cancel_appointment':
          if (senderType === 'doctor' && entities.patient_name) {
-            responseText = `Appointment for patient ${entities.patient_name} has been cancelled.`;
+            responseText = `(Simulated for web UI) Appointment for patient ${entities.patient_name} would be cancelled. For actual cancellation, please use WhatsApp.`;
         } else {
-            responseText = "Your appointment has been cancelled.";
+            responseText = "(Simulated for web UI) Your appointment would be cancelled. For actual cancellation, please use WhatsApp.";
         }
         break;
       case 'pause_bookings':
-        responseText = `Bookings will be paused.`;
+        responseText = `(Simulated for web UI) Bookings would be paused.`;
         if (entities.date) responseText += ` Until: ${entities.date}.`;
+        responseText += ` For actual pausing, doctor should use WhatsApp commands.`;
         break;
       case 'resume_bookings':
-        responseText = "Bookings are now resumed.";
+        responseText = "(Simulated for web UI) Bookings would be resumed. For actual resumption, doctor should use WhatsApp commands.";
         break;
       case 'cancel_all_meetings_today':
-        responseText = "All meetings for today have been cancelled.";
+        responseText = "(Simulated for web UI) All meetings for today would be cancelled. For actual command, doctor should use WhatsApp.";
         break;
       case 'greeting':
-        responseText = "Hello! How can I help you today?";
+        responseText = "Hello! How can I help you today? (Web UI)";
         break;
       case 'thank_you':
-        responseText = "You're welcome!";
+        responseText = "You're welcome! (Web UI)";
         break;
       case 'faq_opening_hours':
         responseText = "The clinic is open from 9 AM to 5 PM, Monday to Friday.";
         break;
-      // ... other intents
+      default:
+         const {output} = await ai.generate({ // ai object is not defined here, needs to be imported or passed if used.
+            prompt: `The user sent: "${messageText}". Provide a helpful, concise, and generic response as a medical clinic AI assistant, as their specific intent was not recognized by the system. This is for a web UI test.`,
+         });
+        responseText = output?.text || "I'm sorry, I didn't quite understand that. Could you please rephrase? (Web UI)";
     }
 
     return { responseText, intent, entities };
 
   } catch (error) {
-    console.error("Error in handleUserMessage:", error);
-    return { responseText: "Sorry, I encountered an error. Please try again." };
+    console.error("Error in handleUserMessage (web UI):", error);
+    return { responseText: "Sorry, I encountered an error (Web UI). Please try again." };
   }
 }
 
 export async function getDailySummaryAction(): Promise<string> {
   try {
-    // Mock appointment data for the demo
-    const mockAppointments: GenerateDailySummaryInput['appointments'] = [
-      { patientName: "Anika Sharma", time: "10:00 AM", reason: "Tooth cleaning" },
-      { patientName: "Rohan Verma", time: "11:30 AM", reason: "Implant consultation" },
-      { patientName: "Priya Singh", time: "02:00 PM", reason: "Routine check-up" },
-    ];
+    const today = format(new Date(), 'yyyy-MM-dd');
+    const appointmentsFromSheet = await getAppointmentsFromSheet(today);
 
-    if (mockAppointments.length === 0) {
+
+    if (!appointmentsFromSheet || appointmentsFromSheet.length === 0) {
         return "No appointments scheduled for today.";
     }
 
-    const { summary } = await generateDailySummary({ appointments: mockAppointments });
+    const formattedAppointments: GenerateDailySummaryInput['appointments'] = appointmentsFromSheet
+      .filter(app => app.status === 'booked') // Ensure we only summarize booked appointments
+      .map(app => ({
+          patientName: app.patientName,
+          time: app.appointmentTime, // Assuming appointmentTime is already formatted like "10:00 AM" or "14:00"
+          reason: app.reason,
+    }));
+
+    if (formattedAppointments.length === 0) {
+        return "No booked appointments scheduled for today.";
+    }
+
+    const { summary } = await generateDailySummary({ appointments: formattedAppointments });
     return summary;
   } catch (error) {
     console.error("Error in getDailySummaryAction:", error);
-    return "Sorry, I couldn't fetch the daily summary due to an error.";
+    // Check if error is an object and has a message property
+    const errorMessage = (typeof error === 'object' && error !== null && 'message' in error) 
+                         ? (error as Error).message 
+                         : 'Unknown error';
+    return `Sorry, I couldn't fetch the daily summary due to an error: ${errorMessage}`;
   }
 }
