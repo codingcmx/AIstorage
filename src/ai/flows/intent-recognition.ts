@@ -16,16 +16,19 @@ import {
   type RecognizeIntentInput,
   RecognizeIntentPromptOutputSchema, // Schema for the AI prompt's output
   type RecognizeIntentOutput // Type for the exported function's output
-} from '../schemas';
+} from '../schemas'; // Adjusted path
 
 // Re-export types for external use if needed by other server components/actions
 export type { RecognizeIntentInput, RecognizeIntentOutput };
 
 export async function recognizeIntent(input: RecognizeIntentInput): Promise<RecognizeIntentOutput> {
+  console.log('[Intent Recognition Flow] Attempting to recognize intent for:', input);
   const result = await recognizeIntentFlow(input);
   // Ensure entities is always an object, even if undefined from the flow
   const entities = result.entities || {};
-  return { ...result, entities, originalMessage: input.message };
+  const output = { ...result, entities, originalMessage: input.message };
+  console.log('[Intent Recognition Flow] Final output (with originalMessage):', output);
+  return output;
 }
 
 const prompt = ai.definePrompt({
@@ -104,10 +107,10 @@ const recognizeIntentFlow = ai.defineFlow(
     outputSchema: RecognizeIntentPromptOutputSchema, // The flow itself outputs based on the prompt's schema
   },
   async input => {
-    console.log('[Intent Recognition Flow] Input:', input);
+    console.log('[Intent Recognition Flow] Internal flow input:', input);
     const {output} = await prompt(input);
     if (!output) {
-        console.error('[Intent Recognition Flow] Failed to produce output for message:', input.message);
+        console.error('[Intent Recognition Flow] Failed to produce output from AI model for message:', input.message);
         // Return a default structure for 'other' intent if AI fails
         return {
             intent: 'other',
@@ -115,7 +118,7 @@ const recognizeIntentFlow = ai.defineFlow(
             entities: { error: 'Failed to recognize intent from AI model.'}
         }
     }
-    console.log('[Intent Recognition Flow] Output from AI:', output);
+    console.log('[Intent Recognition Flow] Internal flow output from AI:', output);
     // Ensure entities is always an object, even if the AI returns undefined or null for it.
     const entities = output.entities || {};
     return { ...output, entities };

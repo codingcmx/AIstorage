@@ -21,13 +21,13 @@ import {
   updateAppointmentInSheet,
   findAppointment,
   getAppointmentsFromSheet,
-  AppointmentData,
+  type AppointmentData,
 } from '@/services/google-sheets-service';
 import {
   createCalendarEvent,
   updateCalendarEvent,
   deleteCalendarEvent,
-  CalendarEventArgs,
+  type CalendarEventArgs,
 } from '@/services/google-calendar-service';
 import {
   format,
@@ -57,7 +57,7 @@ export type ProcessWhatsAppMessageInput = z.infer<
 const ProcessWhatsAppMessageOutputSchema = z.object({
   responseSent: z.boolean().describe('Whether a response was attempted.'),
   responseText: z.string().optional().describe('The text of the response sent or planned.'),
-  intentData: RecognizeIntentFunctionOutputSchema.optional().describe('Data from intent recognition.'), // Use the correct schema
+  intentData: RecognizeIntentFunctionOutputSchema.optional().describe('Data from intent recognition.'), // Use the correct schema from ../schemas
   error: z.string().optional().describe('Error message if processing failed.'),
 });
 export type ProcessWhatsAppMessageOutput = z.infer<
@@ -67,10 +67,10 @@ export type ProcessWhatsAppMessageOutput = z.infer<
 // Helper to parse date and time from entities, trying various formats
 function parseDateTime(dateStr?: string, timeStr?: string): Date | null {
   if (!dateStr || !timeStr) {
-    console.log(`parseDateTime: Missing dateStr ('${dateStr}') or timeStr ('${timeStr}'). Returning null.`);
+    console.log(`[ParseDateTime] Missing dateStr ('${dateStr}') or timeStr ('${timeStr}'). Returning null.`);
     return null;
   }
-  console.log(`parseDateTime: Attempting to parse date: "${dateStr}", time: "${timeStr}"`);
+  console.log(`[ParseDateTime] Attempting to parse date: "${dateStr}", time: "${timeStr}"`);
 
   let parsedDate: Date | null = null;
 
@@ -90,27 +90,27 @@ function parseDateTime(dateStr?: string, timeStr?: string): Date | null {
       const combinedStr = `${dateStr} ${timeStr}`;
       parsedDate = parse(combinedStr, fmt, new Date());
       if (isValid(parsedDate)) {
-        console.log(`parseDateTime: Parsed successfully with format "${fmt}":`, parsedDate);
+        console.log(`[ParseDateTime] Parsed successfully with format "${fmt}":`, parsedDate);
         return parsedDate;
       }
     } catch (e) { /* ignore, try next format */ }
   }
-  console.log(`parseDateTime: Failed specific formats. Trying fallback for dateStr: "${dateStr}", timeStr: "${timeStr}"`);
+  console.log(`[ParseDateTime] Failed specific formats. Trying fallback for dateStr: "${dateStr}", timeStr: "${timeStr}"`);
 
   // Fallback for more general time expressions like "2pm" (without minutes) 
   // or "10 AM" (without minutes) when combined with a YYYY-MM-DD date.
   try {
     let baseDate = parse(dateStr, 'yyyy-MM-dd', new Date()); 
-    console.log(`parseDateTime: Fallback: Parsed baseDate with 'yyyy-MM-dd': "${dateStr}" ->`, baseDate, `(isValid: ${isValid(baseDate)})`);
+    console.log(`[ParseDateTime] Fallback: Parsed baseDate with 'yyyy-MM-dd': "${dateStr}" ->`, baseDate, `(isValid: ${isValid(baseDate)})`);
     
     if (!isValid(baseDate)) {
         // Fallback if dateStr is not in 'yyyy-MM-dd' or is a more complete ISO string
         const isoDate = parseISO(dateStr); 
         if (isValid(isoDate)) {
             baseDate = isoDate;
-            console.log(`parseDateTime: Fallback: Parsed dateStr as ISO: "${dateStr}" ->`, baseDate);
+            console.log(`[ParseDateTime] Fallback: Parsed dateStr as ISO: "${dateStr}" ->`, baseDate);
         } else {
-            console.warn(`parseDateTime: Fallback: Unparseable date string: "${dateStr}" after yyyy-MM-dd and ISO attempts.`);
+            console.warn(`[ParseDateTime] Fallback: Unparseable date string: "${dateStr}" after yyyy-MM-dd and ISO attempts.`);
             return null;
         }
     }
@@ -119,7 +119,7 @@ function parseDateTime(dateStr?: string, timeStr?: string): Date | null {
     // Updated regex to be more flexible with optional minutes and period spacing.
     const timeMatch = (timeStr as string).match(/(\d{1,2})[:\.]?(\d{2})?\s*(am|pm)?/i);
     if (timeMatch) {
-      console.log(`parseDateTime: Fallback: Time regex match for "${timeStr}":`, timeMatch);
+      console.log(`[ParseDateTime] Fallback: Time regex match for "${timeStr}":`, timeMatch);
       let hour = parseInt(timeMatch[1]);
       const minute = timeMatch[2] ? parseInt(timeMatch[2]) : 0; // Default to 00 if minutes are not present
       const period = timeMatch[3]?.toLowerCase();
@@ -127,27 +127,27 @@ function parseDateTime(dateStr?: string, timeStr?: string): Date | null {
       if (period === 'pm' && hour < 12) hour += 12; // If 12 PM, hour is already 12. If 1 PM, 1 + 12 = 13.
       if (period === 'am' && hour === 12) hour = 0; // Midnight case: 12 AM is 00 hours
       
-      console.log(`parseDateTime: Fallback: Calculated hour: ${hour}, minute: ${minute}, period: ${period}`);
+      console.log(`[ParseDateTime] Fallback: Calculated hour: ${hour}, minute: ${minute}, period: ${period}`);
       
       if (hour >= 0 && hour <= 23 && minute >=0 && minute <= 59) {
         parsedDate = setMilliseconds(setSeconds(setMinutes(setHours(baseDate, hour), minute), 0), 0);
         if (isValid(parsedDate)) {
-            console.log(`parseDateTime: Fallback: Parsed with regex on baseDate ${format(baseDate, 'yyyy-MM-dd')}:`, parsedDate);
+            console.log(`[ParseDateTime] Fallback: Parsed with regex on baseDate ${format(baseDate, 'yyyy-MM-dd')}:`, parsedDate);
             return parsedDate;
         } else {
-            console.warn(`parseDateTime: Fallback: Resulting date from setHours/Minutes is invalid. Base: ${baseDate}, H:${hour}, M:${minute}`);
+            console.warn(`[ParseDateTime] Fallback: Resulting date from setHours/Minutes is invalid. Base: ${baseDate}, H:${hour}, M:${minute}`);
         }
       } else {
-          console.warn(`parseDateTime: Fallback: Invalid hour/minute from regex: hour=${hour}, minute=${minute} for timeStr: "${timeStr}"`);
+          console.warn(`[ParseDateTime] Fallback: Invalid hour/minute from regex: hour=${hour}, minute=${minute} for timeStr: "${timeStr}"`);
       }
     } else {
-        console.warn(`parseDateTime: Fallback: Time string "${timeStr}" did not match regex.`);
+        console.warn(`[ParseDateTime] Fallback: Time string "${timeStr}" did not match regex.`);
     }
   } catch (e) {
-    console.error(`parseDateTime: Fallback: Error in fallback date/time parsing for dateStr: "${dateStr}", timeStr: "${timeStr}":`, e);
+    console.error(`[ParseDateTime] Fallback: Error in fallback date/time parsing for dateStr: "${dateStr}", timeStr: "${timeStr}":`, e);
   }
   
-  console.warn(`parseDateTime: Failed to parse date/time combination for date: "${dateStr}", time: "${timeStr}" using all methods. Returning null.`);
+  console.warn(`[ParseDateTime] Failed to parse date/time combination for date: "${dateStr}", time: "${timeStr}" using all methods. Returning null.`);
   return null; 
 }
 
@@ -210,7 +210,7 @@ const processWhatsAppMessageFlow = ai.defineFlow(
 
           if (conflict) {
             responseText = `Sorry, the time slot ${format(appointmentDateTime, 'h:mm a')} on ${format(appointmentDateTime, 'MMMM d')} is already booked. Would you like to try another time?`;
-            console.warn(`[Process Flow - ${input.senderId}] Booking failed: Conflict found for ${format(appointmentDateTime, 'yyyy-MM-dd HH:mm')}. Conflict: ${conflict.id}`);
+            console.warn(`[Process Flow - ${input.senderId}] Booking failed: Conflict found for ${format(appointmentDateTime, 'yyyy-MM-dd HH:mm')}. Conflict: ${JSON.stringify(conflict)}`);
             break;
           }
           console.log(`[Process Flow - ${input.senderId}] No conflicts found. Proceeding with booking.`);
@@ -311,7 +311,7 @@ const processWhatsAppMessageFlow = ai.defineFlow(
             const appointmentToReschedule = await findAppointment({ patientName: patientNameToReschedule, status: ['booked', 'pending_confirmation', 'rescheduled']});
             if (!appointmentToReschedule || !appointmentToReschedule.rowIndex || !appointmentToReschedule.calendarEventId) {
                 responseText = `Could not find an active appointment for "${patientNameToReschedule}" to reschedule.`;
-                console.warn(`[Process Flow - ${input.senderId}] Doctor reschedule failed: No appointment found for "${patientNameToReschedule}".`);
+                console.warn(`[Process Flow - ${input.senderId}] Doctor reschedule failed: No appointment found for "${patientNameToReschedule}". Result: ${JSON.stringify(appointmentToReschedule)}`);
                 break;
             }
             console.log(`[Process Flow - ${input.senderId}] Found appointment for "${patientNameToReschedule}" to reschedule: ID ${appointmentToReschedule.id}, Row ${appointmentToReschedule.rowIndex}, CalendarEventID ${appointmentToReschedule.calendarEventId}`);
@@ -367,7 +367,7 @@ const processWhatsAppMessageFlow = ai.defineFlow(
             const appointmentToCancel = await findAppointment({ patientName: patientNameToCancel, date: dateToCancel, status: ['booked', 'pending_confirmation', 'rescheduled'] });
              if (!appointmentToCancel || !appointmentToCancel.rowIndex || !appointmentToCancel.calendarEventId) {
                 responseText = `Could not find an active appointment for "${patientNameToCancel}" ${dateToCancel ? `on ${dateToCancel}` : ''} to cancel.`;
-                console.warn(`[Process Flow - ${input.senderId}] Doctor cancel failed: No appointment found for "${patientNameToCancel}" ${dateToCancel ? `on ${dateToCancel}` : ''}.`);
+                console.warn(`[Process Flow - ${input.senderId}] Doctor cancel failed: No appointment found for "${patientNameToCancel}" ${dateToCancel ? `on ${dateToCancel}` : ''}. Result: ${JSON.stringify(appointmentToCancel)}`);
                 break;
             }
             console.log(`[Process Flow - ${input.senderId}] Found appointment for "${patientNameToCancel}" to cancel: ID ${appointmentToCancel.id}, Row ${appointmentToCancel.rowIndex}, CalendarEventID ${appointmentToCancel.calendarEventId}`);
@@ -478,12 +478,17 @@ const processWhatsAppMessageFlow = ai.defineFlow(
       };
     } finally {
       console.log(`[Process Flow - ${input.senderId}] Attempting to send response: "${responseText}"`);
-      const sendResult = await sendWhatsAppMessage(input.senderId, responseText);
-      finalResponseSent = sendResult.success;
-      if (!sendResult.success) {
-        console.error(`[Process Flow - ${input.senderId}] Failed to send WhatsApp response: ${sendResult.error}`);
-      } else {
-        console.log(`[Process Flow - ${input.senderId}] WhatsApp response sent successfully. Message ID: ${sendResult.messageId}`);
+      try {
+        const sendResult = await sendWhatsAppMessage(input.senderId, responseText);
+        finalResponseSent = sendResult.success;
+        if (!sendResult.success) {
+            console.error(`[Process Flow - ${input.senderId}] Failed to send WhatsApp response: ${sendResult.error}`);
+        } else {
+            console.log(`[Process Flow - ${input.senderId}] WhatsApp response sent successfully. Message ID: ${sendResult.messageId}`);
+        }
+      } catch (sendError: any) {
+        console.error(`[Process Flow - ${input.senderId}] Exception during sendWhatsAppMessage:`, sendError.message || sendError);
+        finalResponseSent = false;
       }
     }
 
