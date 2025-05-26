@@ -1,3 +1,4 @@
+
 // src/ai/flows/process-whatsapp-message-flow.ts
 'use server';
 /**
@@ -12,7 +13,7 @@
 
 import {ai} from '@/ai/genkit';
 import {z} from 'genkit';
-import {recognizeIntent, RecognizeIntentOutput, RecognizeIntentOutputSchema} from './intent-recognition'; // Added RecognizeIntentOutputSchema
+import {recognizeIntent, RecognizeIntentOutput, RecognizeIntentOutputSchema} from './intent-recognition';
 import { sendWhatsAppMessage } from '@/services/whatsapp-service';
 import {
   addAppointmentToSheet,
@@ -488,4 +489,3 @@ const processWhatsAppMessageFlow = ai.defineFlow(
     };
   }
 );
-
