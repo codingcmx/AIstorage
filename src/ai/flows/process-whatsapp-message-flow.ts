@@ -14,7 +14,7 @@
 import {ai} from '@/ai/genkit';
 import {z}from 'genkit';
 import {recognizeIntent, type RecognizeIntentOutput} from './intent-recognition';
-import { RecognizeIntentFunctionOutputSchema } from '../schemas'; // Correctly named schema for the full function output
+import { RecognizeIntentFunctionOutputSchema } from '../schemas'; 
 import { sendWhatsAppMessage } from '@/services/whatsapp-service';
 import {
   addAppointmentToSheet,
@@ -48,7 +48,17 @@ const ProcessWhatsAppMessageInputSchema = z.object({
   senderName: z.string().optional().describe("The sender's profile name, if available."),
   messageText: z.string().describe('The text content of the WhatsApp message.'),
   messageId: z.string().describe('The ID of the incoming WhatsApp message.'),
-  timestamp: z.string().datetime({ message: "Invalid ISO 8601 date string for timestamp" }).describe('The timestamp of the incoming message as an ISO 8601 string.'),
+  timestamp: z.string().refine(
+    (val) => {
+      try {
+        const parsed = parseISO(val);
+        return isValid(parsed);
+      } catch (e) {
+        return false;
+      }
+    }, 
+    { message: "Timestamp must be a valid ISO 8601 date-time string." }
+  ).describe('The timestamp of the incoming message as an ISO 8601 string.'),
 });
 export type ProcessWhatsAppMessageInput = z.infer<
   typeof ProcessWhatsAppMessageInputSchema
@@ -77,34 +87,34 @@ function parseDateTime(dateStr?: string, timeStr?: string): Date | null {
   const specificDateTimeFormats = [
     'yyyy-MM-dd HH:mm',
     'yyyy-MM-dd h:mm a',
-    'yyyy-MM-dd hh:mma',
-    'yyyy-MM-dd ha',
+    'yyyy-MM-dd hh:mma', // Handles "2pm"
+    'yyyy-MM-dd ha',     // Handles "2a"
   ];
 
   for (const fmt of specificDateTimeFormats) {
     try {
       const combinedStr = `${dateStr} ${timeStr}`;
-      parsedDate = parse(combinedStr, fmt, new Date());
-      if (isValid(parsedDate)) {
-        console.log(`[ParseDateTime] Parsed successfully with format "${fmt}":`, parsedDate);
-        return parsedDate;
+      const tempDate = parse(combinedStr, fmt, new Date());
+      if (isValid(tempDate)) {
+        console.log(`[ParseDateTime] Parsed successfully with format "${fmt}":`, tempDate);
+        return tempDate;
       }
     } catch (e) { /* ignore, try next format */ }
   }
   console.log(`[ParseDateTime] Failed specific formats. Trying fallback for dateStr: "${dateStr}", timeStr: "${timeStr}"`);
 
   try {
-    let baseDate = parse(dateStr, 'yyyy-MM-dd', new Date());
-    if (!isValid(baseDate)) {
-        const isoDate = parseISO(dateStr);
-        if (isValid(isoDate)) {
-            baseDate = isoDate;
-        } else {
-            console.warn(`[ParseDateTime] Fallback: Unparseable date string: "${dateStr}" after yyyy-MM-dd and ISO attempts.`);
-            return null;
-        }
+    let baseDate = parseISO(dateStr); // Try parsing date as ISO first (e.g. from AI)
+    if(!isValid(baseDate)) {
+        baseDate = parse(dateStr, 'yyyy-MM-dd', new Date()); // Fallback to yyyy-MM-dd
     }
 
+    if (!isValid(baseDate)) {
+        console.warn(`[ParseDateTime] Fallback: Unparseable date string: "${dateStr}" after ISO and yyyy-MM-dd attempts.`);
+        return null;
+    }
+
+    // Regex to handle various time inputs like "2pm", "14:00", "10 AM", "10:30pm"
     const timeMatch = (timeStr as string).match(/(\d{1,2})[:\.]?(\d{2})?\s*(am|pm)?/i);
     if (timeMatch) {
       let hour = parseInt(timeMatch[1]);
@@ -112,7 +122,7 @@ function parseDateTime(dateStr?: string, timeStr?: string): Date | null {
       const period = timeMatch[3]?.toLowerCase();
 
       if (period === 'pm' && hour < 12) hour += 12;
-      if (period === 'am' && hour === 12) hour = 0;
+      if (period === 'am' && hour === 12) hour = 0; // Midnight case
 
       if (hour >= 0 && hour <= 23 && minute >=0 && minute <= 59) {
         parsedDate = setMilliseconds(setSeconds(setMinutes(setHours(baseDate, hour), minute), 0), 0);
@@ -151,7 +161,7 @@ const processWhatsAppMessageFlow = ai.defineFlow(
   },
   async (input: ProcessWhatsAppMessageInput): Promise<ProcessWhatsAppMessageOutput> => {
     const messageReceivedDate = parseISO(input.timestamp); // Parse ISO string to Date object
-    console.log(`[Process Flow - ${input.senderId}] Received message: "${input.messageText}" at ${isValid(messageReceivedDate) ? messageReceivedDate.toISOString() : input.timestamp}`);
+    console.log(`[Process Flow - ${input.senderId}] Received message: "${input.messageText}" at ${isValid(messageReceivedDate) ? format(messageReceivedDate, 'yyyy-MM-dd HH:mm:ssXXX') : input.timestamp}`);
     
     let responseText = "I'm sorry, I'm not sure how to help with that. Please try rephrasing or ask about appointments.";
     let recognizedIntentData: RecognizeIntentOutput | undefined = undefined;
@@ -159,7 +169,7 @@ const processWhatsAppMessageFlow = ai.defineFlow(
     let processingErrorDetail: string | undefined = undefined;
 
     try {
-      const isLikelyDoctor = input.messageText.startsWith('/') || (input.senderId === process.env.DOCTOR_WHATSAPP_NUMBER);
+      const isLikelyDoctor = input.messageText.startsWith('/') || (process.env.DOCTOR_WHATSAPP_NUMBER && input.senderId === process.env.DOCTOR_WHATSAPP_NUMBER);
       const senderType = isLikelyDoctor ? 'doctor' : 'patient';
       console.log(`[Process Flow - ${input.senderId}] Sender type determined as: ${senderType}`);
 
@@ -204,9 +214,9 @@ const processWhatsAppMessageFlow = ai.defineFlow(
           console.log(`[Process Flow - ${input.senderId}] No conflicts found. Proceeding with booking.`);
 
           const appointmentStart = appointmentDateTime;
-          const appointmentEnd = addMinutes(appointmentStart, 60);
+          const appointmentEnd = addMinutes(appointmentStart, 60); // Assuming 1-hour appointments
 
-          const newAppointmentId = input.messageId;
+          const newAppointmentId = input.messageId; // Use WhatsApp message ID as appointment ID
 
           const calendarEventData: CalendarEventArgs = {
             summary: `Appt: ${reason} - ${input.senderName || input.senderId}`,
@@ -344,18 +354,28 @@ const processWhatsAppMessageFlow = ai.defineFlow(
             responseText = `Your appointment for ${appointmentToCancel.reason} on ${appointmentToCancel.appointmentDate} at ${appointmentToCancel.appointmentTime} has been cancelled.`;
           } else { // Doctor cancelling
             const patientNameToCancel = entities?.patient_name as string;
-            const dateToCancel = entities?.date as string;
+            const dateToCancel = entities?.date as string; // Date from intent might be relative ("today")
 
             if (!patientNameToCancel) {
-                responseText = "Doctor, please provide the patient name to cancel. Format: /cancel [Patient Name] appointment (optionally add 'for YYYY-MM-DD')";
+                responseText = "Doctor, please provide the patient name to cancel. Format: /cancel [Patient Name] appointment (optionally add 'for YYYY-MM-DD' or 'for today')";
                 console.warn(`[Process Flow - ${input.senderId}] Doctor cancel failed: Missing patient name.`);
                 break;
             }
             console.log(`[Process Flow - ${input.senderId}] Doctor cancelling for patient: "${patientNameToCancel}"${dateToCancel ? ` on ${dateToCancel}` : ''}.`);
-            const appointmentToCancel = await findAppointment({ patientName: patientNameToCancel, date: dateToCancel, status: ['booked', 'pending_confirmation', 'rescheduled'] });
+            // If dateToCancel is "today", ensure it's formatted as YYYY-MM-DD for the query
+            const specificDateToQuery = (dateToCancel === format(new Date(), 'yyyy-MM-dd') || dateToCancel?.toLowerCase() === 'today') 
+                                         ? format(new Date(), 'yyyy-MM-dd') 
+                                         : dateToCancel; // Use the parsed date if not today
+
+            const appointmentToCancel = await findAppointment({ 
+                patientName: patientNameToCancel, 
+                date: specificDateToQuery, // Use the potentially resolved date string
+                status: ['booked', 'pending_confirmation', 'rescheduled'] 
+            });
+
              if (!appointmentToCancel || !appointmentToCancel.rowIndex || !appointmentToCancel.calendarEventId) {
-                responseText = `Could not find an active appointment for "${patientNameToCancel}" ${dateToCancel ? `on ${dateToCancel}` : ''} to cancel.`;
-                console.warn(`[Process Flow - ${input.senderId}] Doctor cancel failed: No appointment found for "${patientNameToCancel}" ${dateToCancel ? `on ${dateToCancel}` : ''}. Result: ${JSON.stringify(appointmentToCancel)}`);
+                responseText = `Could not find an active appointment for "${patientNameToCancel}" ${specificDateToQuery ? `on ${specificDateToQuery}` : ''} to cancel.`;
+                console.warn(`[Process Flow - ${input.senderId}] Doctor cancel failed: No appointment found for "${patientNameToCancel}" ${specificDateToQuery ? `on ${specificDateToQuery}` : ''}. Result: ${JSON.stringify(appointmentToCancel)}`);
                 break;
             }
             console.log(`[Process Flow - ${input.senderId}] Found appointment for "${patientNameToCancel}" to cancel: ID ${appointmentToCancel.id}, Row ${appointmentToCancel.rowIndex}, CalendarEventID ${appointmentToCancel.calendarEventId}`);
@@ -396,7 +416,7 @@ const processWhatsAppMessageFlow = ai.defineFlow(
             }
             const todayStr = format(new Date(), 'yyyy-MM-dd');
             console.log(`[Process Flow - ${input.senderId}] Doctor command: Cancel all meetings for today (${todayStr}).`);
-            const todaysAppointments = await getAppointmentsFromSheet({ date: todayStr, status: ['booked', 'rescheduled'] });
+            const todaysAppointments = await getAppointmentsFromSheet({ date: todayStr, status: ['booked', 'rescheduled', 'pending_confirmation'] }); // Include pending
             if (todaysAppointments.length === 0) {
                 responseText = "Doctor, there are no booked or rescheduled appointments for today to cancel.";
                 console.log(`[Process Flow - ${input.senderId}] No appointments to cancel for today.`);
@@ -457,7 +477,7 @@ const processWhatsAppMessageFlow = ai.defineFlow(
     } catch (flowError: any) {
       console.error(`[Process Flow - ${input.senderId}] CRITICAL ERROR in processWhatsAppMessageFlow:`, flowError.message || String(flowError), flowError.stack);
       responseText = "I'm sorry, an internal error occurred while processing your request. Please try again in a few moments. If the problem persists, please contact the clinic directly.";
-      processingErrorDetail = flowError.message || String(flowError);
+      processingErrorDetail = flowError.message || String(flowError); // Capture the processing error
     } finally {
       console.log(`[Process Flow - ${input.senderId}] Attempting to send final response: "${responseText}"`);
       try {
@@ -466,6 +486,7 @@ const processWhatsAppMessageFlow = ai.defineFlow(
         if (!sendResult.success) {
             const sendErrorMessage = `Failed to send WhatsApp response: ${sendResult.error}`;
             console.error(`[Process Flow - ${input.senderId}] ${sendErrorMessage}`);
+            // If there wasn't a processing error already, the sending error becomes the primary error.
             if (!processingErrorDetail) { 
                 processingErrorDetail = sendErrorMessage;
             }
@@ -476,6 +497,7 @@ const processWhatsAppMessageFlow = ai.defineFlow(
         const sendExceptionMessage = `Exception during sendWhatsAppMessage: ${sendException.message || String(sendException)}`;
         console.error(`[Process Flow - ${input.senderId}] ${sendExceptionMessage}`, sendException.stack);
         finalResponseSent = false;
+         // If there wasn't a processing error already, the sending exception becomes the primary error.
         if (!processingErrorDetail) {
             processingErrorDetail = sendExceptionMessage;
         }
@@ -487,7 +509,8 @@ const processWhatsAppMessageFlow = ai.defineFlow(
         responseSent: finalResponseSent,
         responseText: responseText,
         intentData: recognizedIntentData, 
-        error: processingErrorDetail,
+        error: processingErrorDetail, // This will now include errors from processing OR sending
     };
   }
 );
+
