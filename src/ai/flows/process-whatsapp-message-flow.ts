@@ -12,8 +12,9 @@
  */
 
 import {ai} from '@/ai/genkit';
-import {z} from 'genkit';
-import {recognizeIntent, RecognizeIntentOutput, RecognizeIntentOutputSchema} from './intent-recognition';
+import {z}from 'genkit';
+import {recognizeIntent, type RecognizeIntentOutput} from './intent-recognition';
+import { RecognizeIntentFunctionOutputSchema } from '../schemas'; // Import the schema for use here
 import { sendWhatsAppMessage } from '@/services/whatsapp-service';
 import {
   addAppointmentToSheet,
@@ -56,7 +57,7 @@ export type ProcessWhatsAppMessageInput = z.infer<
 const ProcessWhatsAppMessageOutputSchema = z.object({
   responseSent: z.boolean().describe('Whether a response was attempted.'),
   responseText: z.string().optional().describe('The text of the response sent or planned.'),
-  intentData: RecognizeIntentOutputSchema.optional().describe('Data from intent recognition.'),
+  intentData: RecognizeIntentFunctionOutputSchema.optional().describe('Data from intent recognition.'),
   error: z.string().optional().describe('Error message if processing failed.'),
 });
 export type ProcessWhatsAppMessageOutput = z.infer<
@@ -164,7 +165,7 @@ const processWhatsAppMessageFlow = ai.defineFlow(
     outputSchema: ProcessWhatsAppMessageOutputSchema,
   },
   async (input: ProcessWhatsAppMessageInput): Promise<ProcessWhatsAppMessageOutput> => {
-    console.log(`[${input.senderId}] Received message: "${input.messageText}" at ${input.timestamp.toISOString()}`);
+    console.log(`[Process Flow - ${input.senderId}] Received message: "${input.messageText}" at ${input.timestamp.toISOString()}`);
     let responseText = "I'm sorry, I'm not sure how to help with that. Please try rephrasing or ask about appointments.";
     let recognizedIntentData: RecognizeIntentOutput | undefined = undefined;
     let finalResponseSent = false;
@@ -172,32 +173,32 @@ const processWhatsAppMessageFlow = ai.defineFlow(
     try {
       const isLikelyDoctor = input.messageText.startsWith('/') || (input.senderId === process.env.DOCTOR_WHATSAPP_NUMBER); 
       const senderType = isLikelyDoctor ? 'doctor' : 'patient';
-      console.log(`[${input.senderId}] Sender type determined as: ${senderType}`);
+      console.log(`[Process Flow - ${input.senderId}] Sender type determined as: ${senderType}`);
 
       recognizedIntentData = await recognizeIntent({
         message: input.messageText,
         senderType: senderType,
       });
       const {intent, entities, originalMessage} = recognizedIntentData;
-      console.log(`[${input.senderId}] Intent: ${intent}, Entities:`, JSON.stringify(entities), `Original: "${originalMessage}"`);
+      console.log(`[Process Flow - ${input.senderId}] Intent: ${intent}, Entities:`, JSON.stringify(entities), `Original: "${originalMessage}"`);
 
       switch (intent) {
         case 'book_appointment': {
-          const reason = entities.reason as string || 'Check-up';
-          const appointmentDateTime = parseDateTime(entities.date as string, entities.time as string);
+          const reason = entities?.reason as string || 'Check-up';
+          const appointmentDateTime = parseDateTime(entities?.date as string, entities?.time as string);
 
           if (!appointmentDateTime) {
-            responseText = `I couldn't understand the date or time for your appointment (parsed date: "${entities.date}", time: "${entities.time}"). Could you please provide them in a clearer format, like "next Monday at 2pm" or "July 25th at 10:00"? You asked for: ${reason}.`;
-            console.warn(`[${input.senderId}] Booking failed: Unclear date/time. Date entity: "${entities.date}", Time entity: "${entities.time}"`);
+            responseText = `I couldn't understand the date or time for your appointment (parsed date: "${entities?.date}", time: "${entities?.time}"). Could you please provide them in a clearer format, like "next Monday at 2pm" or "July 25th at 10:00"? You asked for: ${reason}.`;
+            console.warn(`[Process Flow - ${input.senderId}] Booking failed: Unclear date/time. Date entity: "${entities?.date}", Time entity: "${entities?.time}"`);
             break;
           }
           if (!isFuture(appointmentDateTime)) {
             responseText = `The appointment time ${format(appointmentDateTime, 'MMM d, yyyy h:mm a')} is in the past. Please choose a future time.`;
-            console.warn(`[${input.senderId}] Booking failed: Past date/time. Parsed: ${appointmentDateTime}`);
+            console.warn(`[Process Flow - ${input.senderId}] Booking failed: Past date/time. Parsed: ${appointmentDateTime}`);
             break;
           }
 
-          console.log(`[${input.senderId}] Checking for conflicts for ${format(appointmentDateTime, 'yyyy-MM-dd HH:mm')}`);
+          console.log(`[Process Flow - ${input.senderId}] Checking for conflicts for ${format(appointmentDateTime, 'yyyy-MM-dd HH:mm')}`);
           const existingAppointments = await getAppointmentsFromSheet({
             date: format(appointmentDateTime, 'yyyy-MM-dd'),
             status: ['booked', 'pending_confirmation', 'rescheduled'] // Check against all non-cancelled active states
@@ -209,10 +210,10 @@ const processWhatsAppMessageFlow = ai.defineFlow(
 
           if (conflict) {
             responseText = `Sorry, the time slot ${format(appointmentDateTime, 'h:mm a')} on ${format(appointmentDateTime, 'MMMM d')} is already booked. Would you like to try another time?`;
-            console.warn(`[${input.senderId}] Booking failed: Conflict found for ${format(appointmentDateTime, 'yyyy-MM-dd HH:mm')}. Conflict: ${conflict.id}`);
+            console.warn(`[Process Flow - ${input.senderId}] Booking failed: Conflict found for ${format(appointmentDateTime, 'yyyy-MM-dd HH:mm')}. Conflict: ${conflict.id}`);
             break;
           }
-          console.log(`[${input.senderId}] No conflicts found. Proceeding with booking.`);
+          console.log(`[Process Flow - ${input.senderId}] No conflicts found. Proceeding with booking.`);
 
           const appointmentStart = appointmentDateTime;
           const appointmentEnd = addMinutes(appointmentStart, 60); // Default 1-hour appointments
@@ -225,15 +226,15 @@ const processWhatsAppMessageFlow = ai.defineFlow(
             startTime: appointmentStart.toISOString(),
             endTime: appointmentEnd.toISOString(),
           };
-          console.log(`[${input.senderId}] Creating calendar event:`, calendarEventData);
+          console.log(`[Process Flow - ${input.senderId}] Creating calendar event:`, calendarEventData);
           const calendarEvent = await createCalendarEvent(calendarEventData);
 
           if (!calendarEvent || !calendarEvent.id) {
             responseText = "I'm sorry, there was an issue creating the calendar event. Please try again.";
-            console.error(`[${input.senderId}] Failed to create calendar event for booking. Calendar response:`, calendarEvent);
+            console.error(`[Process Flow - ${input.senderId}] Failed to create calendar event for booking. Calendar response:`, calendarEvent);
             break;
           }
-          console.log(`[${input.senderId}] Calendar event created: ${calendarEvent.id}`);
+          console.log(`[Process Flow - ${input.senderId}] Calendar event created: ${calendarEvent.id}`);
 
           const appointmentData: AppointmentData = {
             id: newAppointmentId,
@@ -246,46 +247,46 @@ const processWhatsAppMessageFlow = ai.defineFlow(
             calendarEventId: calendarEvent.id,
             notes: `Booked via WhatsApp. Original message: "${originalMessage}"`,
           };
-          console.log(`[${input.senderId}] Adding appointment to sheet:`, appointmentData);
+          console.log(`[Process Flow - ${input.senderId}] Adding appointment to sheet:`, appointmentData);
           await addAppointmentToSheet(appointmentData);
-          console.log(`[${input.senderId}] Appointment added to sheet.`);
+          console.log(`[Process Flow - ${input.senderId}] Appointment added to sheet.`);
 
           responseText = `Great! Your appointment for "${reason}" is confirmed for ${format(appointmentStart, 'EEEE, MMMM do, yyyy')} at ${format(appointmentStart, 'h:mm a')}. We look forward to seeing you!`;
           break;
         }
 
         case 'reschedule_appointment': {
-          const newDateTime = parseDateTime(entities.date as string, entities.time as string);
+          const newDateTime = parseDateTime(entities?.date as string, entities?.time as string);
           if (!newDateTime) {
-            responseText = `I couldn't understand the new date or time for rescheduling (date: "${entities.date}", time: "${entities.time}"). Please provide it clearly.`;
-            console.warn(`[${input.senderId}] Reschedule failed: Unclear new date/time. Date entity: "${entities.date}", Time entity: "${entities.time}"`);
+            responseText = `I couldn't understand the new date or time for rescheduling (date: "${entities?.date}", time: "${entities?.time}"). Please provide it clearly.`;
+            console.warn(`[Process Flow - ${input.senderId}] Reschedule failed: Unclear new date/time. Date entity: "${entities?.date}", Time entity: "${entities?.time}"`);
             break;
           }
           if (!isFuture(newDateTime)) {
               responseText = `The new appointment time ${format(newDateTime, 'MMM d, yyyy h:mm a')} is in the past. Please choose a future time.`;
-              console.warn(`[${input.senderId}] Reschedule failed: Past new date/time. Parsed: ${newDateTime}`);
+              console.warn(`[Process Flow - ${input.senderId}] Reschedule failed: Past new date/time. Parsed: ${newDateTime}`);
               break;
           }
 
           if (senderType === 'patient') {
-            console.log(`[${input.senderId}] Patient rescheduling: Finding existing appointment.`);
+            console.log(`[Process Flow - ${input.senderId}] Patient rescheduling: Finding existing appointment.`);
             const existingAppointment = await findAppointment({ phoneNumber: input.senderId, status: ['booked', 'pending_confirmation', 'rescheduled'] });
             if (!existingAppointment) {
               responseText = "I couldn't find an existing appointment for you to reschedule. Would you like to book a new one?";
-              console.warn(`[${input.senderId}] Reschedule failed: No existing appointment found for patient.`);
+              console.warn(`[Process Flow - ${input.senderId}] Reschedule failed: No existing appointment found for patient.`);
               break;
             }
             if (!existingAppointment.rowIndex || !existingAppointment.calendarEventId) {
                responseText = "I found your appointment, but there's an issue with its record needed for rescheduling. Please contact the clinic directly.";
-               console.error(`[${input.senderId}] Patient reschedule error: Missing rowIndex (${existingAppointment.rowIndex}) or calendarEventId (${existingAppointment.calendarEventId}) for appointment ID ${existingAppointment.id}`);
+               console.error(`[Process Flow - ${input.senderId}] Patient reschedule error: Missing rowIndex (${existingAppointment.rowIndex}) or calendarEventId (${existingAppointment.calendarEventId}) for appointment ID ${existingAppointment.id}`);
                break;
             }
-            console.log(`[${input.senderId}] Found appointment to reschedule: ID ${existingAppointment.id}, Row ${existingAppointment.rowIndex}, CalendarEventID ${existingAppointment.calendarEventId}`);
+            console.log(`[Process Flow - ${input.senderId}] Found appointment to reschedule: ID ${existingAppointment.id}, Row ${existingAppointment.rowIndex}, CalendarEventID ${existingAppointment.calendarEventId}`);
             
             const newStartTime = newDateTime;
             const newEndTime = addMinutes(newStartTime, 60);
 
-            console.log(`[${input.senderId}] Updating appointment in sheet (row ${existingAppointment.rowIndex}) and calendar (${existingAppointment.calendarEventId}).`);
+            console.log(`[Process Flow - ${input.senderId}] Updating appointment in sheet (row ${existingAppointment.rowIndex}) and calendar (${existingAppointment.calendarEventId}).`);
             await updateAppointmentInSheet(existingAppointment.rowIndex, {
               appointmentDate: format(newStartTime, 'yyyy-MM-dd'),
               appointmentTime: format(newStartTime, 'HH:mm'),
@@ -299,26 +300,26 @@ const processWhatsAppMessageFlow = ai.defineFlow(
             });
             responseText = `Your appointment has been rescheduled to ${format(newStartTime, 'EEEE, MMMM do, yyyy')} at ${format(newStartTime, 'h:mm a')}.`;
           } else { // Doctor rescheduling
-            const patientNameToReschedule = entities.patient_name as string;
+            const patientNameToReschedule = entities?.patient_name as string;
             if (!patientNameToReschedule) {
                 responseText = "Doctor, please provide the patient name to reschedule. Format: /reschedule [Patient Name] to [YYYY-MM-DD] at [HH:MM]";
-                console.warn(`[${input.senderId}] Doctor reschedule failed: Missing patient name.`);
+                console.warn(`[Process Flow - ${input.senderId}] Doctor reschedule failed: Missing patient name.`);
                 break;
             }
-            console.log(`[${input.senderId}] Doctor rescheduling for patient: "${patientNameToReschedule}"`);
+            console.log(`[Process Flow - ${input.senderId}] Doctor rescheduling for patient: "${patientNameToReschedule}"`);
             
             const appointmentToReschedule = await findAppointment({ patientName: patientNameToReschedule, status: ['booked', 'pending_confirmation', 'rescheduled']});
             if (!appointmentToReschedule || !appointmentToReschedule.rowIndex || !appointmentToReschedule.calendarEventId) {
                 responseText = `Could not find an active appointment for "${patientNameToReschedule}" to reschedule.`;
-                console.warn(`[${input.senderId}] Doctor reschedule failed: No appointment found for "${patientNameToReschedule}".`);
+                console.warn(`[Process Flow - ${input.senderId}] Doctor reschedule failed: No appointment found for "${patientNameToReschedule}".`);
                 break;
             }
-            console.log(`[${input.senderId}] Found appointment for "${patientNameToReschedule}" to reschedule: ID ${appointmentToReschedule.id}, Row ${appointmentToReschedule.rowIndex}, CalendarEventID ${appointmentToReschedule.calendarEventId}`);
+            console.log(`[Process Flow - ${input.senderId}] Found appointment for "${patientNameToReschedule}" to reschedule: ID ${appointmentToReschedule.id}, Row ${appointmentToReschedule.rowIndex}, CalendarEventID ${appointmentToReschedule.calendarEventId}`);
             
             const newStartTime = newDateTime;
             const newEndTime = addMinutes(newStartTime, 60);
 
-            console.log(`[${input.senderId}] Updating appointment in sheet (row ${appointmentToReschedule.rowIndex}) and calendar (${appointmentToReschedule.calendarEventId}) for doctor's request.`);
+            console.log(`[Process Flow - ${input.senderId}] Updating appointment in sheet (row ${appointmentToReschedule.rowIndex}) and calendar (${appointmentToReschedule.calendarEventId}) for doctor's request.`);
             await updateAppointmentInSheet(appointmentToReschedule.rowIndex, {
                 appointmentDate: format(newStartTime, 'yyyy-MM-dd'),
                 appointmentTime: format(newStartTime, 'HH:mm'),
@@ -337,39 +338,39 @@ const processWhatsAppMessageFlow = ai.defineFlow(
 
         case 'cancel_appointment': {
           if (senderType === 'patient') {
-            console.log(`[${input.senderId}] Patient cancelling appointment: Finding existing appointment.`);
+            console.log(`[Process Flow - ${input.senderId}] Patient cancelling appointment: Finding existing appointment.`);
             const appointmentToCancel = await findAppointment({ phoneNumber: input.senderId, status: ['booked', 'pending_confirmation', 'rescheduled'] });
             if (!appointmentToCancel) {
               responseText = "I couldn't find an active appointment for you to cancel.";
-              console.warn(`[${input.senderId}] Patient cancel failed: No existing appointment found.`);
+              console.warn(`[Process Flow - ${input.senderId}] Patient cancel failed: No existing appointment found.`);
               break;
             }
              if (!appointmentToCancel.rowIndex || !appointmentToCancel.calendarEventId) {
                responseText = "I found your appointment, but there's an issue with its record needed for cancellation. Please contact the clinic directly.";
-               console.error(`[${input.senderId}] Patient cancel error: Missing rowIndex (${appointmentToCancel.rowIndex}) or calendarEventId (${appointmentToCancel.calendarEventId}) for appointment ID ${appointmentToCancel.id}`);
+               console.error(`[Process Flow - ${input.senderId}] Patient cancel error: Missing rowIndex (${appointmentToCancel.rowIndex}) or calendarEventId (${appointmentToCancel.calendarEventId}) for appointment ID ${appointmentToCancel.id}`);
                break;
             }
-            console.log(`[${input.senderId}] Found appointment to cancel: ID ${appointmentToCancel.id}, Row ${appointmentToCancel.rowIndex}, CalendarEventID ${appointmentToCancel.calendarEventId}`);
+            console.log(`[Process Flow - ${input.senderId}] Found appointment to cancel: ID ${appointmentToCancel.id}, Row ${appointmentToCancel.rowIndex}, CalendarEventID ${appointmentToCancel.calendarEventId}`);
             await updateAppointmentInSheet(appointmentToCancel.rowIndex, { status: 'cancelled', notes: `${appointmentToCancel.notes || ''}\nCancelled by patient on ${format(new Date(), 'yyyy-MM-dd HH:mm')}. WA Msg ID: ${input.messageId}` });
             await deleteCalendarEvent(appointmentToCancel.calendarEventId);
             responseText = `Your appointment for ${appointmentToCancel.reason} on ${appointmentToCancel.appointmentDate} at ${appointmentToCancel.appointmentTime} has been cancelled.`;
           } else { // Doctor cancelling
-            const patientNameToCancel = entities.patient_name as string;
-            const dateToCancel = entities.date as string; 
+            const patientNameToCancel = entities?.patient_name as string;
+            const dateToCancel = entities?.date as string; 
 
             if (!patientNameToCancel) {
                 responseText = "Doctor, please provide the patient name to cancel. Format: /cancel [Patient Name] appointment (optionally add 'for YYYY-MM-DD')";
-                console.warn(`[${input.senderId}] Doctor cancel failed: Missing patient name.`);
+                console.warn(`[Process Flow - ${input.senderId}] Doctor cancel failed: Missing patient name.`);
                 break;
             }
-            console.log(`[${input.senderId}] Doctor cancelling for patient: "${patientNameToCancel}"${dateToCancel ? ` on ${dateToCancel}` : ''}.`);
+            console.log(`[Process Flow - ${input.senderId}] Doctor cancelling for patient: "${patientNameToCancel}"${dateToCancel ? ` on ${dateToCancel}` : ''}.`);
             const appointmentToCancel = await findAppointment({ patientName: patientNameToCancel, date: dateToCancel, status: ['booked', 'pending_confirmation', 'rescheduled'] });
              if (!appointmentToCancel || !appointmentToCancel.rowIndex || !appointmentToCancel.calendarEventId) {
                 responseText = `Could not find an active appointment for "${patientNameToCancel}" ${dateToCancel ? `on ${dateToCancel}` : ''} to cancel.`;
-                console.warn(`[${input.senderId}] Doctor cancel failed: No appointment found for "${patientNameToCancel}" ${dateToCancel ? `on ${dateToCancel}` : ''}.`);
+                console.warn(`[Process Flow - ${input.senderId}] Doctor cancel failed: No appointment found for "${patientNameToCancel}" ${dateToCancel ? `on ${dateToCancel}` : ''}.`);
                 break;
             }
-            console.log(`[${input.senderId}] Found appointment for "${patientNameToCancel}" to cancel: ID ${appointmentToCancel.id}, Row ${appointmentToCancel.rowIndex}, CalendarEventID ${appointmentToCancel.calendarEventId}`);
+            console.log(`[Process Flow - ${input.senderId}] Found appointment for "${patientNameToCancel}" to cancel: ID ${appointmentToCancel.id}, Row ${appointmentToCancel.rowIndex}, CalendarEventID ${appointmentToCancel.calendarEventId}`);
             await updateAppointmentInSheet(appointmentToCancel.rowIndex, { status: 'cancelled', notes: `${appointmentToCancel.notes || ''}\nCancelled by doctor on ${format(new Date(), 'yyyy-MM-dd HH:mm')}. WA Msg ID: ${input.messageId}` });
             await deleteCalendarEvent(appointmentToCancel.calendarEventId);
             responseText = `Appointment for ${patientNameToCancel} (${appointmentToCancel.appointmentDate} at ${appointmentToCancel.appointmentTime}) has been cancelled. You may want to notify the patient.`;
@@ -380,53 +381,55 @@ const processWhatsAppMessageFlow = ai.defineFlow(
         case 'pause_bookings':
             if (senderType !== 'doctor') { 
                 responseText = "Sorry, only doctors can pause bookings."; 
-                console.warn(`[${input.senderId}] Unauthorized attempt to pause bookings by non-doctor.`);
+                console.warn(`[Process Flow - ${input.senderId}] Unauthorized attempt to pause bookings by non-doctor.`);
                 break; 
             }
-            const startDate = entities.start_date ? ` from ${entities.start_date}` : '';
-            const endDate = entities.end_date ? ` until ${entities.end_date}` : '';
+            const startDate = entities?.start_date ? ` from ${entities.start_date}` : '';
+            const endDate = entities?.end_date ? ` until ${entities.end_date}` : '';
+            // TODO: Implement persistent storage for pause state for true production readiness
             responseText = `Okay, doctor. I will notionally pause new bookings${startDate}${endDate}. (Note: This system currently relies on direct '/resume bookings' command and does not automatically block bookings during this period without further persistent state setup).`;
-            console.log(`[${input.senderId}] Doctor command: Pause bookings${startDate}${endDate}. This is a notional pause.`);
+            console.log(`[Process Flow - ${input.senderId}] Doctor command: Pause bookings${startDate}${endDate}. This is a notional pause.`);
             break;
         case 'resume_bookings':
             if (senderType !== 'doctor') { 
                 responseText = "Sorry, only doctors can resume bookings."; 
-                console.warn(`[${input.senderId}] Unauthorized attempt to resume bookings by non-doctor.`);
+                console.warn(`[Process Flow - ${input.senderId}] Unauthorized attempt to resume bookings by non-doctor.`);
                 break; 
             }
+            // TODO: Implement logic to clear persistent pause state
             responseText = "Okay, doctor. Bookings are now notionally resumed.";
-            console.log(`[${input.senderId}] Doctor command: Resume bookings. This is a notional resumption.`);
+            console.log(`[Process Flow - ${input.senderId}] Doctor command: Resume bookings. This is a notional resumption.`);
             break;
         case 'cancel_all_meetings_today': {
             if (senderType !== 'doctor') { 
                 responseText = "Sorry, only doctors can cancel all meetings."; 
-                console.warn(`[${input.senderId}] Unauthorized attempt to cancel all meetings by non-doctor.`);
+                console.warn(`[Process Flow - ${input.senderId}] Unauthorized attempt to cancel all meetings by non-doctor.`);
                 break; 
             }
             const todayStr = format(new Date(), 'yyyy-MM-dd');
-            console.log(`[${input.senderId}] Doctor command: Cancel all meetings for today (${todayStr}).`);
+            console.log(`[Process Flow - ${input.senderId}] Doctor command: Cancel all meetings for today (${todayStr}).`);
             const todaysAppointments = await getAppointmentsFromSheet({ date: todayStr, status: ['booked', 'rescheduled'] }); 
             if (todaysAppointments.length === 0) {
                 responseText = "Doctor, there are no booked or rescheduled appointments for today to cancel.";
-                console.log(`[${input.senderId}] No appointments to cancel for today.`);
+                console.log(`[Process Flow - ${input.senderId}] No appointments to cancel for today.`);
                 break;
             }
             let cancelledCount = 0;
             let patientNotifications: string[] = [];
-            console.log(`[${input.senderId}] Found ${todaysAppointments.length} appointments to cancel for today.`);
+            console.log(`[Process Flow - ${input.senderId}] Found ${todaysAppointments.length} appointments to cancel for today.`);
             for (const app of todaysAppointments) {
                 if (app.rowIndex && app.calendarEventId) {
                     try {
-                        console.log(`[${input.senderId}] Cancelling appointment ID ${app.id} (Row: ${app.rowIndex}, Calendar: ${app.calendarEventId}) for 'cancel all today'.`);
+                        console.log(`[Process Flow - ${input.senderId}] Cancelling appointment ID ${app.id} (Row: ${app.rowIndex}, Calendar: ${app.calendarEventId}) for 'cancel all today'.`);
                         await updateAppointmentInSheet(app.rowIndex, { status: 'cancelled', notes: `${app.notes || ''}\nCancelled by doctor (all today) on ${format(new Date(), 'yyyy-MM-dd HH:mm')}. WA Msg ID: ${input.messageId}`});
                         await deleteCalendarEvent(app.calendarEventId);
                         cancelledCount++;
                         patientNotifications.push(`${app.patientName} (${app.appointmentTime})`); 
                     } catch (e: any) {
-                        console.error(`[${input.senderId}] Error cancelling appointment ID ${app.id} for 'cancel all today':`, e);
+                        console.error(`[Process Flow - ${input.senderId}] Error cancelling appointment ID ${app.id} for 'cancel all today':`, e);
                     }
                 } else {
-                     console.warn(`[${input.senderId}] Skipping appointment ID ${app.id} for 'cancel all today' due to missing rowIndex (${app.rowIndex}) or calendarEventId (${app.calendarEventId}).`);
+                     console.warn(`[Process Flow - ${input.senderId}] Skipping appointment ID ${app.id} for 'cancel all today' due to missing rowIndex (${app.rowIndex}) or calendarEventId (${app.calendarEventId}).`);
                 }
             }
             if (cancelledCount > 0) {
@@ -450,35 +453,37 @@ const processWhatsAppMessageFlow = ai.defineFlow(
         default: {
           const genericPrompt = `The user (a ${senderType}) sent: "${input.messageText}". Their intent was not specifically recognized by the booking system. Provide a helpful, polite, and concise response as a medical clinic AI assistant. If it seems like a question you can answer generally (e.g. about common cold, headache), provide a very brief, general, non-diagnostic suggestion and advise to book an appointment for specifics. If it's unclear, apologize and state you can primarily help with appointments.`;
           try {
-            console.log(`[${input.senderId}] Fallback to generic AI prompt for message: "${input.messageText}"`);
+            console.log(`[Process Flow - ${input.senderId}] Fallback to generic AI prompt for message: "${input.messageText}"`);
             const {output} = await ai.generate({
               prompt: genericPrompt,
-              model: ai.getModel(), // Using the pre-configured model from ai.ts
+              model: ai.getModel(), 
             });
             responseText = output?.text || "I'm sorry, I didn't quite understand that. I can help with booking, rescheduling, or cancelling appointments. How can I assist you?";
           } catch (genError) {
-             console.error(`[${input.senderId}] Error generating fallback AI response:`, genError);
+             console.error(`[Process Flow - ${input.senderId}] Error generating fallback AI response:`, genError);
              responseText = "I'm sorry, I'm having a little trouble understanding. Could you please rephrase? You can ask me to book, reschedule, or cancel an appointment.";
           }
         }
       }
     } catch (flowError: any) {
-      console.error(`[${input.senderId}] Error in processWhatsAppMessageFlow:`, flowError.message || flowError, flowError.stack);
+      console.error(`[Process Flow - ${input.senderId}] Error in processWhatsAppMessageFlow:`, flowError.message || flowError, flowError.stack);
       responseText = "I'm sorry, an internal error occurred while processing your request. Please try again in a few moments. If the problem persists, please contact the clinic directly.";
+      // Do not attempt to send a message if the error occurs before this point
+      // The 'finally' block will handle sending whatever responseText is set to.
       return {
-        responseSent: false, 
+        responseSent: false, // Will be updated by finally block
         responseText: responseText,
         intentData: recognizedIntentData,
         error: flowError.message || String(flowError),
       };
     } finally {
-      console.log(`[${input.senderId}] Attempting to send response: "${responseText}"`);
+      console.log(`[Process Flow - ${input.senderId}] Attempting to send response: "${responseText}"`);
       const sendResult = await sendWhatsAppMessage(input.senderId, responseText);
       finalResponseSent = sendResult.success;
       if (!sendResult.success) {
-        console.error(`[${input.senderId}] Failed to send WhatsApp response: ${sendResult.error}`);
+        console.error(`[Process Flow - ${input.senderId}] Failed to send WhatsApp response: ${sendResult.error}`);
       } else {
-        console.log(`[${input.senderId}] WhatsApp response sent successfully. Message ID: ${sendResult.messageId}`);
+        console.log(`[Process Flow - ${input.senderId}] WhatsApp response sent successfully. Message ID: ${sendResult.messageId}`);
       }
     }
 

@@ -1,40 +1,41 @@
+
 'use server';
 
 /**
  * @fileOverview Recognizes the intent of a message from a patient or doctor.
  *
  * - recognizeIntent - A function that recognizes the intent of a message.
- * - RecognizeIntentInput - The input type for the recognizeIntent function.
- * - RecognizeIntentOutput - The return type for the recognizeIntent function.
+ * - RecognizeIntentInput - The input type for the recognizeIntent function (imported from schemas).
+ * - RecognizeIntentOutput - The return type for the recognizeIntent function (imported from schemas).
  */
 
-import {ai} from '@/ai/genkit';
-import {z} from 'genkit';
+import {ai}from '@/ai/genkit';
+// Import schemas and types from the new schemas.ts file
+import {
+  RecognizeIntentInputSchema,
+  type RecognizeIntentInput,
+  RecognizeIntentPromptOutputSchema, // Schema for the AI prompt's output
+  type RecognizeIntentOutput // Type for the exported function's output
+} from '../schemas';
 
-const RecognizeIntentInputSchema = z.object({
-  message: z.string().describe('The message sent via WhatsApp.'),
-  senderType: z.enum(['patient', 'doctor']).describe('The type of sender (patient or doctor).'),
-});
-export type RecognizeIntentInput = z.infer<typeof RecognizeIntentInputSchema>;
-
-const RecognizeIntentOutputSchema = z.object({
-  intent: z.string().describe('The intent of the message. Examples: book_appointment, reschedule_appointment, cancel_appointment, pause_bookings, resume_bookings, cancel_all_meetings_today, greeting, thank_you, faq_opening_hours, other.'),
-  entities: z.record(z.any()).describe('The extracted entities from the message. Examples: { date: "YYYY-MM-DD", time: "HH:MM", reason: "description", patient_name: "Patient Name", start_date: "YYYY-MM-DD", end_date: "YYYY-MM-DD" }'),
-  originalMessage: z.string().describe('The original message text.'),
-});
-export type RecognizeIntentOutput = z.infer<typeof RecognizeIntentOutputSchema>;
+// Re-export types for external use if needed by other server components/actions
+export type { RecognizeIntentInput, RecognizeIntentOutput };
 
 export async function recognizeIntent(input: RecognizeIntentInput): Promise<RecognizeIntentOutput> {
   const result = await recognizeIntentFlow(input);
-  return { ...result, originalMessage: input.message };
+  // Ensure entities is always an object, even if undefined from the flow
+  const entities = result.entities || {};
+  return { ...result, entities, originalMessage: input.message };
 }
 
 const prompt = ai.definePrompt({
   name: 'recognizeIntentPrompt',
   input: {schema: RecognizeIntentInputSchema},
-  output: {schema: RecognizeIntentOutputSchema.omit({originalMessage: true})}, // originalMessage is added by the wrapper
+  output: {schema: RecognizeIntentPromptOutputSchema}, // Use the schema for the AI's direct output
   prompt: `You are a WhatsApp bot for a doctor's clinic. Your task is to identify the intent and extract entities from messages.
 Message is from a {{senderType}}.
+
+Current Date for reference (if needed for relative dates like "tomorrow"): ${new Date().toISOString().split('T')[0]}
 
 Common Patient Intents:
 - book_appointment: User wants to schedule a new appointment.
@@ -75,7 +76,7 @@ Common Doctor Commands (senderType will be 'doctor'):
   Examples:
     "/cancel all meetings today" -> { intent: "cancel_all_meetings_today", entities: {} }
 - /cancel [patient_name] appointment: Doctor wants to cancel a specific patient's appointment.
-  Entities: { patient_name: "Patient's Full Name" }
+  Entities: { patient_name: "Patient's Full Name" } (If date is mentioned, extract {date: "YYYY-MM-DD"})
   Examples:
     "/cancel John Doe appointment" -> { intent: "cancel_appointment", entities: { patient_name: "John Doe" } }
     "/cancel Anika Sharma's appointment for today" -> { intent: "cancel_appointment", entities: { patient_name: "Anika Sharma", date: "YYYY-MM-DD (today)"}}
@@ -88,6 +89,7 @@ If no specific intent is recognized, use "other".
 Prioritize doctor commands if the message starts with '/'.
 Parse dates and times. If year is omitted for a date, assume current year or next year if the date has passed.
 Convert times to HH:MM (24-hour) format if possible, but retain original if ambiguous or if only "morning/afternoon" is given.
+If the message implies a relative date (e.g., "next Monday", "tomorrow"), the date entity should reflect the calculated YYYY-MM-DD.
 
 Message: {{{message}}}
 
@@ -99,19 +101,23 @@ const recognizeIntentFlow = ai.defineFlow(
   {
     name: 'recognizeIntentFlow',
     inputSchema: RecognizeIntentInputSchema,
-    outputSchema: RecognizeIntentOutputSchema.omit({originalMessage: true}),
+    outputSchema: RecognizeIntentPromptOutputSchema, // The flow itself outputs based on the prompt's schema
   },
   async input => {
-    console.log('Recognizing intent for:', input);
+    console.log('[Intent Recognition Flow] Input:', input);
     const {output} = await prompt(input);
     if (!output) {
-        console.error('Intent recognition failed to produce output for message:', input.message);
+        console.error('[Intent Recognition Flow] Failed to produce output for message:', input.message);
+        // Return a default structure for 'other' intent if AI fails
         return {
             intent: 'other',
-            entities: { error: 'Failed to recognize intent.'}
+            // entities should conform to RecognizeIntentPromptOutputSchema, so it's optional or record(any)
+            entities: { error: 'Failed to recognize intent from AI model.'}
         }
     }
-    console.log('Recognized intent:', output);
-    return output;
+    console.log('[Intent Recognition Flow] Output from AI:', output);
+    // Ensure entities is always an object, even if the AI returns undefined or null for it.
+    const entities = output.entities || {};
+    return { ...output, entities };
   }
 );
