@@ -57,7 +57,7 @@ export type ProcessWhatsAppMessageInput = z.infer<
 const ProcessWhatsAppMessageOutputSchema = z.object({
   responseSent: z.boolean().describe('Whether a response was attempted.'),
   responseText: z.string().optional().describe('The text of the response sent or planned.'),
-  intentData: RecognizeIntentFunctionOutputSchema.optional().describe('Data from intent recognition.'),
+  intentData: RecognizeIntentFunctionOutputSchema.optional().describe('Data from intent recognition.'), // Use the correct schema
   error: z.string().optional().describe('Error message if processing failed.'),
 });
 export type ProcessWhatsAppMessageOutput = z.infer<
