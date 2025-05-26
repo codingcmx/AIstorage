@@ -24,7 +24,6 @@ export async function GET(request: NextRequest) {
   if (!WHATSAPP_VERIFY_TOKEN || WHATSAPP_VERIFY_TOKEN.trim() === '') {
     console.error("[WHATSAPP WEBHOOK GET] CRITICAL: WHATSAPP_VERIFY_TOKEN is not set, empty, or undefined in your environment variables (.env file)!");
     console.log('---------------------------------------------------------\n');
-    // Meta expects a 403 if verification fails due to token mismatch.
     return NextResponse.json({error: 'Webhook internal configuration error: Verify token not set on server.'}, {status: 403});
   }
 
@@ -58,7 +57,6 @@ export async function POST(request: NextRequest) {
     const body = await request.json();
     console.log('[WHATSAPP WEBHOOK POST] Received message body:', JSON.stringify(body, null, 2));
 
-    // Validate that this is a WhatsApp API event
     if (body.object === 'whatsapp_business_account') {
       for (const entry of body.entry) {
         for (const change of entry.changes) {
@@ -67,27 +65,26 @@ export async function POST(request: NextRequest) {
             if (value.messages) {
               for (const message of value.messages) {
                 if (message.type === 'text') {
-                  const from = message.from; // Sender's phone number
-                  const text = message.text.body; // Message content
-                  const messageId = message.id; // Message ID
+                  const from = message.from; 
+                  const text = message.text.body; 
+                  const messageId = message.id; 
                   const messageTimestamp = message.timestamp; // WhatsApp timestamp is in seconds as a string
 
                   console.log(`[WHATSAPP WEBHOOK POST] Processing text message from ${from}: "${text}" (ID: ${messageId}, Timestamp: ${messageTimestamp})`);
-
-                  // Dynamically import to avoid issues if processWhatsAppMessage is not ready or has circular deps at module load
+                  
                   const { processWhatsAppMessage } = await import('@/ai/flows/process-whatsapp-message-flow');
+                  
+                  const timestampAsDate = new Date(parseInt(messageTimestamp, 10) * 1000);
 
-                  // Process the message using a Genkit flow
                   await processWhatsAppMessage({
                     senderId: from,
                     messageText: text,
                     messageId: messageId,
-                    timestamp: new Date(parseInt(messageTimestamp, 10) * 1000),
+                    timestamp: timestampAsDate.toISOString(), // Pass as ISO string
                     senderName: value.contacts?.[0]?.profile?.name || 'User',
                   });
                 } else {
                   console.log(`[WHATSAPP WEBHOOK POST] Received non-text message type: ${message.type} from ${message.from}`);
-                  // Optionally handle other message types
                 }
               }
             }
@@ -98,7 +95,6 @@ export async function POST(request: NextRequest) {
       console.log('---------------------------------------------------------\n');
       return NextResponse.json({status: 'success'}, {status: 200});
     } else {
-      // Not a WhatsApp API event
       console.warn('[WHATSAPP WEBHOOK POST] Received non-WhatsApp API event:', body);
       console.log('---------------------------------------------------------\n');
       return NextResponse.json({error: 'Not a WhatsApp event'}, {status: 400});

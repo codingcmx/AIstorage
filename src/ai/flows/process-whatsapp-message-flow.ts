@@ -14,7 +14,7 @@
 import {ai} from '@/ai/genkit';
 import {z}from 'genkit';
 import {recognizeIntent, type RecognizeIntentOutput} from './intent-recognition';
-import { RecognizeIntentFunctionOutputSchema } from '../schemas';
+import { RecognizeIntentFunctionOutputSchema } from '../schemas'; // Correctly named schema for the full function output
 import { sendWhatsAppMessage } from '@/services/whatsapp-service';
 import {
   addAppointmentToSheet,
@@ -48,7 +48,7 @@ const ProcessWhatsAppMessageInputSchema = z.object({
   senderName: z.string().optional().describe("The sender's profile name, if available."),
   messageText: z.string().describe('The text content of the WhatsApp message.'),
   messageId: z.string().describe('The ID of the incoming WhatsApp message.'),
-  timestamp: z.date().describe('The timestamp of the incoming message.'),
+  timestamp: z.string().datetime({ message: "Invalid ISO 8601 date string for timestamp" }).describe('The timestamp of the incoming message as an ISO 8601 string.'),
 });
 export type ProcessWhatsAppMessageInput = z.infer<
   typeof ProcessWhatsAppMessageInputSchema
@@ -150,7 +150,9 @@ const processWhatsAppMessageFlow = ai.defineFlow(
     outputSchema: ProcessWhatsAppMessageOutputSchema,
   },
   async (input: ProcessWhatsAppMessageInput): Promise<ProcessWhatsAppMessageOutput> => {
-    console.log(`[Process Flow - ${input.senderId}] Received message: "${input.messageText}" at ${input.timestamp.toISOString()}`);
+    const messageReceivedDate = parseISO(input.timestamp); // Parse ISO string to Date object
+    console.log(`[Process Flow - ${input.senderId}] Received message: "${input.messageText}" at ${isValid(messageReceivedDate) ? messageReceivedDate.toISOString() : input.timestamp}`);
+    
     let responseText = "I'm sorry, I'm not sure how to help with that. Please try rephrasing or ask about appointments.";
     let recognizedIntentData: RecognizeIntentOutput | undefined = undefined;
     let finalResponseSent = false;
@@ -218,8 +220,6 @@ const processWhatsAppMessageFlow = ai.defineFlow(
           if (!calendarEvent || !calendarEvent.id) {
             responseText = "I'm sorry, there was an issue creating the calendar event. Please try again.";
             console.error(`[Process Flow - ${input.senderId}] Failed to create calendar event for booking. Calendar response:`, calendarEvent);
-            // Potentially throw an error here to be caught by the main catch block
-            // This helps centralize error message construction to the user.
             throw new Error("Failed to create calendar event.");
           }
           console.log(`[Process Flow - ${input.senderId}] Calendar event created: ${calendarEvent.id}`);
@@ -443,15 +443,14 @@ const processWhatsAppMessageFlow = ai.defineFlow(
           const genericPrompt = `The user (a ${senderType}) sent: "${input.messageText}". Their intent was not specifically recognized by the booking system. Provide a helpful, polite, and concise response as a medical clinic AI assistant. If it seems like a question you can answer generally (e.g. about common cold, headache), provide a very brief, general, non-diagnostic suggestion and advise to book an appointment for specifics. If it's unclear, apologize and state you can primarily help with appointments.`;
           try {
             console.log(`[Process Flow - ${input.senderId}] Fallback to generic AI prompt for message: "${input.messageText}"`);
-            const {output} = await ai.generate({ // Ensure ai object is available and configured
+            const {output} = await ai.generate({ 
               prompt: genericPrompt,
-              model: ai.getModel(), // Use the globally configured model
+              model: ai.getModel(), 
             });
             responseText = output?.text || "I'm sorry, I didn't quite understand that. I can help with booking, rescheduling, or cancelling appointments. How can I assist you?";
           } catch (genError: any) {
              console.error(`[Process Flow - ${input.senderId}] Error generating fallback AI response:`, genError);
              responseText = "I'm sorry, I'm having a little trouble understanding. Could you please rephrase? You can ask me to book, reschedule, or cancel an appointment.";
-             // Do not throw here, as we want to send this apology.
           }
         }
       }
@@ -467,7 +466,7 @@ const processWhatsAppMessageFlow = ai.defineFlow(
         if (!sendResult.success) {
             const sendErrorMessage = `Failed to send WhatsApp response: ${sendResult.error}`;
             console.error(`[Process Flow - ${input.senderId}] ${sendErrorMessage}`);
-            if (!processingErrorDetail) { // If no prior processing error, this send failure is the main error
+            if (!processingErrorDetail) { 
                 processingErrorDetail = sendErrorMessage;
             }
         } else {
@@ -477,7 +476,7 @@ const processWhatsAppMessageFlow = ai.defineFlow(
         const sendExceptionMessage = `Exception during sendWhatsAppMessage: ${sendException.message || String(sendException)}`;
         console.error(`[Process Flow - ${input.senderId}] ${sendExceptionMessage}`, sendException.stack);
         finalResponseSent = false;
-        if (!processingErrorDetail) { // If no prior processing error, this send failure is the main error
+        if (!processingErrorDetail) {
             processingErrorDetail = sendExceptionMessage;
         }
       }
@@ -487,9 +486,8 @@ const processWhatsAppMessageFlow = ai.defineFlow(
     return {
         responseSent: finalResponseSent,
         responseText: responseText,
-        intentData: recognizedIntentData, // This will have the last successful value or be undefined if error before intent recognition
+        intentData: recognizedIntentData, 
         error: processingErrorDetail,
     };
   }
 );
-
