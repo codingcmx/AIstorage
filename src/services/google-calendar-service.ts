@@ -3,10 +3,10 @@
 
 import {google, calendar_v3} from 'googleapis';
 
-const GOOGLE_SERVICE_ACCOUNT_CLIENT_EMAIL =
-  process.env.GOOGLE_SERVICE_ACCOUNT_CLIENT_EMAIL;
-const GOOGLE_SERVICE_ACCOUNT_PRIVATE_KEY =
-  process.env.GOOGLE_SERVICE_ACCOUNT_PRIVATE_KEY?.replace(/\\n/g, '\n');
+const GOOGLE_CALENDAR_SERVICE_ACCOUNT_CLIENT_EMAIL =
+  process.env.GOOGLE_CALENDAR_SERVICE_ACCOUNT_CLIENT_EMAIL;
+const GOOGLE_CALENDAR_SERVICE_ACCOUNT_PRIVATE_KEY =
+  process.env.GOOGLE_CALENDAR_SERVICE_ACCOUNT_PRIVATE_KEY?.replace(/\\n/g, '\n');
 const GOOGLE_CALENDAR_ID = process.env.GOOGLE_CALENDAR_ID || 'primary';
 
 let calendar: calendar_v3.Calendar | null = null;
@@ -16,18 +16,18 @@ async function getCalendarClient(): Promise<calendar_v3.Calendar> {
     return calendar;
   }
   if (
-    !GOOGLE_SERVICE_ACCOUNT_CLIENT_EMAIL ||
-    !GOOGLE_SERVICE_ACCOUNT_PRIVATE_KEY
+    !GOOGLE_CALENDAR_SERVICE_ACCOUNT_CLIENT_EMAIL ||
+    !GOOGLE_CALENDAR_SERVICE_ACCOUNT_PRIVATE_KEY
   ) {
-    const errorMsg = 'Google Calendar API credentials are not set. Service will not function.';
+    const errorMsg = 'Google Calendar API credentials (client email, private key) are not set. Service will not function.';
     console.error(errorMsg);
     throw new Error(errorMsg);
   }
 
   const auth = new google.auth.GoogleAuth({
     credentials: {
-      client_email: GOOGLE_SERVICE_ACCOUNT_CLIENT_EMAIL,
-      private_key: GOOGLE_SERVICE_ACCOUNT_PRIVATE_KEY,
+      client_email: GOOGLE_CALENDAR_SERVICE_ACCOUNT_CLIENT_EMAIL,
+      private_key: GOOGLE_CALENDAR_SERVICE_ACCOUNT_PRIVATE_KEY,
     },
     scopes: ['https://www.googleapis.com/auth/calendar'],
   });
@@ -53,9 +53,10 @@ async function getDefaultTimezone(client: calendar_v3.Calendar): Promise<string>
     try {
         const calendarData = await client.calendars.get({ calendarId: GOOGLE_CALENDAR_ID! });
         defaultTimezone = calendarData.data.timeZone || 'UTC';
+        console.log(`[Google Calendar Service] Default timezone for calendar ${GOOGLE_CALENDAR_ID} is ${defaultTimezone}`);
         return defaultTimezone;
     } catch (e) {
-        console.warn("Could not fetch default calendar timezone, defaulting to UTC", e);
+        console.warn(`[Google Calendar Service] Could not fetch default calendar timezone for ${GOOGLE_CALENDAR_ID}, defaulting to UTC. Error:`, e);
         return 'UTC';
     }
 }
@@ -91,10 +92,10 @@ export async function createCalendarEvent(
       calendarId: GOOGLE_CALENDAR_ID!,
       requestBody: event,
     });
-    console.log('Event created in Google Calendar:', response.data.id, response.data.summary);
+    console.log('[Google Calendar Service] Event created:', response.data.id, response.data.summary);
     return response.data;
   } catch (error) {
-    console.error('Error creating event in Google Calendar:', error);
+    console.error('[Google Calendar Service] Error creating event:', error);
     throw error;
   }
 }
@@ -108,27 +109,23 @@ export async function getCalendarEventsForDay(date: string): Promise<calendar_v3
   const client = await getCalendarClient();
   const tz = await getDefaultTimezone(client);
 
-  const timeMinDate = new Date(`${date}T00:00:00`); // Assumes date is YYYY-MM-DD
+  const timeMinDate = new Date(`${date}T00:00:00`); 
   const timeMaxDate = new Date(`${date}T23:59:59`);
-
-  // If the calendar is in a different timezone, creating ISO strings directly might be problematic
-  // For simplicity, assuming dates are relative to the calendar's timezone for daily lookup.
-  // More robust solution would convert local date to calendar's timezone start/end of day.
 
   try {
     const response = await client.events.list({
       calendarId: GOOGLE_CALENDAR_ID!,
-      timeMin: timeMinDate.toISOString(), // This might need adjustment based on calendar's TZ vs server TZ
-      timeMax: timeMaxDate.toISOString(), // Same as above
-      timeZone: tz, // Specify the calendar's timezone for the query
+      timeMin: timeMinDate.toISOString(), 
+      timeMax: timeMaxDate.toISOString(), 
+      timeZone: tz, 
       singleEvents: true,
       orderBy: 'startTime',
     });
     const events = response.data.items;
-    console.log(`Found ${events?.length || 0} events for ${date} in calendar ${GOOGLE_CALENDAR_ID}`);
+    console.log(`[Google Calendar Service] Found ${events?.length || 0} events for ${date} in calendar ${GOOGLE_CALENDAR_ID}`);
     return events || [];
   } catch (error) {
-    console.error('Error fetching events from Google Calendar:', error);
+    console.error('[Google Calendar Service] Error fetching events:', error);
     throw error;
   }
 }
@@ -136,59 +133,4 @@ export async function getCalendarEventsForDay(date: string): Promise<calendar_v3
 /**
  * Updates an existing calendar event.
  * @param eventId The ID of the event to update.
- * @param updates Partial CalendarEventArgs to update.
- * @returns The updated calendar event.
- */
-export async function updateCalendarEvent(
-  eventId: string,
-  updates: Partial<CalendarEventArgs>
-): Promise<calendar_v3.Schema$Event> {
-  const client = await getCalendarClient();
-  const tz = updates.timezone || await getDefaultTimezone(client);
-
-  const eventPatch: Partial<calendar_v3.Schema$Event> = {};
-  if (updates.summary) eventPatch.summary = updates.summary;
-  if (updates.description) eventPatch.description = updates.description;
-  if (updates.startTime) eventPatch.start = { dateTime: updates.startTime, timeZone: tz };
-  if (updates.endTime) eventPatch.end = { dateTime: updates.endTime, timeZone: tz };
-  if (updates.attendees) eventPatch.attendees = updates.attendees;
-
-
-  try {
-    const response = await client.events.patch({
-      calendarId: GOOGLE_CALENDAR_ID!,
-      eventId: eventId,
-      requestBody: eventPatch,
-    });
-    console.log('Event updated in Google Calendar:', response.data.id, response.data.summary);
-    return response.data;
-  } catch (error) {
-    console.error(`Error updating event ${eventId} in Google Calendar:`, error);
-    throw error;
-  }
-}
-
-/**
- * Deletes a calendar event.
- * @param eventId The ID of the event to delete.
- * @returns True if successful.
- */
-export async function deleteCalendarEvent(eventId: string): Promise<boolean> {
-  const client = await getCalendarClient();
-  try {
-    await client.events.delete({
-      calendarId: GOOGLE_CALENDAR_ID!,
-      eventId: eventId,
-    });
-    console.log(`Event ${eventId} deleted from Google Calendar.`);
-    return true;
-  } catch (error) {
-    console.error(`Error deleting event ${eventId} from Google Calendar:`, error);
-    // It's possible the event was already deleted, GAPI might return 404 or 410 (Gone)
-    if ((error as any).code === 404 || (error as any).code === 410) {
-        console.warn(`Event ${eventId} not found for deletion, might have been already deleted.`);
-        return true; // Consider it successful if not found
-    }
-    throw error;
-  }
-}
+ *

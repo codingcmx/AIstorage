@@ -12,13 +12,12 @@ The primary interaction for this application is via WhatsApp. The Next.js applic
     ```
 
 2.  **Set up Environment Variables:**
-    Create a `.env` file in the root of your project by copying the content from `.env.example` (if it exists) or by creating a new file. Fill in the following values:
+    Create a `.env` file in the root of your project by copying the content from the provided example or by creating a new file. Fill in the following values:
 
     *   **`GOOGLE_API_KEY`**: Your API key for Google AI (Gemini) used by Genkit.
         *   **How to obtain:** Go to [Google AI Studio](https://aistudio.google.com/app/apikey).
         *   Click on "**Create API key in new project**" or select an existing project and create/get an API key.
         *   This key is specifically for accessing Gemini models through Genkit.
-        *   **This is different from the Google Cloud service account credentials below.**
 
     *   **`WHATSAPP_VERIFY_TOKEN`**: A secret string you create. This token is used by Meta to verify that webhook requests are genuinely from your WhatsApp Business API setup.
         *   You define this token yourself (e.g., a strong random string). You will enter this same token in your Meta App Dashboard when setting up the webhook.
@@ -31,29 +30,28 @@ The primary interaction for this application is via WhatsApp. The Next.js applic
 
     *   **`DOCTOR_WHATSAPP_NUMBER`**: The doctor's WhatsApp number (e.g., 15551234567, no '+' or '00') to receive daily summaries.
 
-    *   **`GOOGLE_SERVICE_ACCOUNT_CLIENT_EMAIL`**: The client email address from your Google Cloud service account JSON key file. This is for **Google Sheets and Google Calendar access**.
-        *   Create a service account in the [Google Cloud Console](https://console.cloud.google.com/) for your project.
-        *   Enable the "Google Sheets API" and "Google Calendar API" for that project.
-        *   Download the JSON key file for the service account. This email will be in that file.
-
-    *   **`GOOGLE_SERVICE_ACCOUNT_PRIVATE_KEY`**: The private key from your Google Cloud service account JSON key file. This is for **Google Sheets and Google Calendar access**.
-        *   This is also found in the JSON key file.
-        *   **Important**: When pasting into the `.env` file, ensure the newlines (`\n`) are preserved. It should look like:
-            ```
-            GOOGLE_SERVICE_ACCOUNT_PRIVATE_KEY="-----BEGIN PRIVATE KEY-----\nYOUR_KEY_LINE_1\nYOUR_KEY_LINE_2\n...\n-----END PRIVATE KEY-----\n"
-            ```
-
-    *   **`GOOGLE_PROJECT_ID`**: Your Google Cloud Project ID (associated with the service account for Sheets/Calendar).
+    *   **`GOOGLE_PROJECT_ID`**: Your Google Cloud Project ID. This is usually the same project where your service accounts are created.
         *   Find this in the [Google Cloud Console](https://console.cloud.google.com/) dashboard for your project.
 
-    *   **`GOOGLE_SHEET_ID`**: The ID of the Google Sheet where appointment data will be logged.
-        *   Create a new Google Sheet. The ID is the long string in the URL: `https://docs.google.com/spreadsheets/d/SHEET_ID_IS_HERE/edit`.
-        *   Ensure your service account (identified by `GOOGLE_SERVICE_ACCOUNT_CLIENT_EMAIL`) has editor access to this sheet. The sheet should be named "Appointments" or the service will create it with the necessary headers.
+    *   **For Google Sheets Access:**
+        *   **`GOOGLE_SHEETS_SERVICE_ACCOUNT_CLIENT_EMAIL`**: The client email address from your Google Cloud service account JSON key file that has access to your Google Sheet.
+        *   **`GOOGLE_SHEETS_SERVICE_ACCOUNT_PRIVATE_KEY`**: The private key from the *same* JSON key file.
+            *   **Important**: When pasting into the `.env` file, ensure the newlines (`\n`) are preserved. It should look like:
+                ```
+                GOOGLE_SHEETS_SERVICE_ACCOUNT_PRIVATE_KEY="-----BEGIN PRIVATE KEY-----\nYOUR_KEY_LINE_1\nYOUR_KEY_LINE_2\n...\n-----END PRIVATE KEY-----\n"
+                ```
+        *   **`GOOGLE_SHEET_ID`**: The ID of the Google Sheet where appointment data will be logged.
+            *   Create a new Google Sheet. The ID is the long string in the URL: `https://docs.google.com/spreadsheets/d/SHEET_ID_IS_HERE/edit`.
+            *   Ensure the service account (identified by `GOOGLE_SHEETS_SERVICE_ACCOUNT_CLIENT_EMAIL`) has **Editor** access to this sheet. The sheet should be named "Appointments" or the service will create it with the necessary headers.
 
-    *   **`GOOGLE_CALENDAR_ID`**: The ID of the Google Calendar to manage appointments.
-        *   For the primary calendar, this is usually `primary`.
-        *   For other calendars, find the Calendar ID in Google Calendar settings.
-        *   Ensure your service account has permission to manage events on this calendar (usually "Make changes to events" or "Make changes AND manage sharing").
+    *   **For Google Calendar Access:**
+        *   **`GOOGLE_CALENDAR_SERVICE_ACCOUNT_CLIENT_EMAIL`**: The client email address from your Google Cloud service account JSON key file that has access to your Google Calendar. (This can be the same as the Sheets service account if you use one account for both).
+        *   **`GOOGLE_CALENDAR_SERVICE_ACCOUNT_PRIVATE_KEY`**: The private key from the *same* JSON key file.
+            *   Follow the same formatting rules for newlines as the Sheets private key.
+        *   **`GOOGLE_CALENDAR_ID`**: The ID of the Google Calendar to manage appointments.
+            *   For the primary calendar, this is usually `primary`.
+            *   For other calendars, find the Calendar ID in Google Calendar settings.
+            *   Ensure the service account (identified by `GOOGLE_CALENDAR_SERVICE_ACCOUNT_CLIENT_EMAIL`) has permission to **"Make changes to events"** on this calendar.
 
     *   **`CRON_SECRET`** (Optional): A secret string you create to help secure your daily summary cron endpoint. If set, your cron job must send this in the `Authorization: Bearer YOUR_CRON_SECRET` header.
 
@@ -83,6 +81,7 @@ The primary interaction for this application is via WhatsApp. The Next.js applic
     *   `whatsapp-service.ts`: For sending messages via WhatsApp API.
     *   `google-sheets-service.ts`: For reading/writing to Google Sheets.
     *   `google-calendar-service.ts`: For managing Google Calendar events.
+*   **Shared Schemas**: `src/ai/schemas.ts` - Contains shared Zod schemas for AI flows.
 *   **Web UI (Optional Admin/Testing)**: `src/app/page.tsx` and `src/components/` - The existing chat interface can be used for testing intents locally (it also uses Gemini via `handleUserMessage`) but is not part of the core patient-facing product.
 
 ## Deployment
@@ -90,5 +89,4 @@ The primary interaction for this application is via WhatsApp. The Next.js applic
 For production, deploy your Next.js application to a platform like Vercel or Firebase App Hosting.
 *   Use the deployed URL for your WhatsApp webhook (e.g., `https://your-app-url.com/api/whatsapp/webhook`).
 *   Remember to set up all your environment variables in your deployment platform's settings.
-*   Configure a cron job (e.g., Vercel Cron Jobs, GitHub Actions, or a third-party service) to call the `https://your-app-url.com/api/cron/daily-summary` endpoint daily at your desired time (e.g., 7 AM).
-```
+*   Configure a cron job (e.g., Vercel Cron Jobs, GitHub Actions, or a third-party service) to call the `

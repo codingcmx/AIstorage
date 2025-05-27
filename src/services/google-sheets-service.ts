@@ -4,32 +4,37 @@
 import {google, sheets_v4} from 'googleapis';
 import { format } from 'date-fns';
 
-const GOOGLE_SERVICE_ACCOUNT_CLIENT_EMAIL =
-  process.env.GOOGLE_SERVICE_ACCOUNT_CLIENT_EMAIL;
-const GOOGLE_SERVICE_ACCOUNT_PRIVATE_KEY =
-  process.env.GOOGLE_SERVICE_ACCOUNT_PRIVATE_KEY?.replace(/\\n/g, '\n');
+// Environment variables for Sheets-specific service account
+const GOOGLE_SHEETS_SERVICE_ACCOUNT_CLIENT_EMAIL =
+  process.env.GOOGLE_SHEETS_SERVICE_ACCOUNT_CLIENT_EMAIL;
+const GOOGLE_SHEETS_SERVICE_ACCOUNT_PRIVATE_KEY =
+  process.env.GOOGLE_SHEETS_SERVICE_ACCOUNT_PRIVATE_KEY?.replace(/\\n/g, '\n');
+
+// Environment variables for Calendar-specific service account (kept separate as per last change)
+// These are not used in this file but are part of the overall multi-credential setup.
+
 const GOOGLE_SHEET_ID = process.env.GOOGLE_SHEET_ID;
 
 let sheets: sheets_v4.Sheets | null = null;
 
-function getSheetsClient(): sheets_v4.Sheets {
+async function getSheetsClient(): Promise<sheets_v4.Sheets> {
   if (sheets) {
     return sheets;
   }
   if (
-    !GOOGLE_SERVICE_ACCOUNT_CLIENT_EMAIL ||
-    !GOOGLE_SERVICE_ACCOUNT_PRIVATE_KEY ||
+    !GOOGLE_SHEETS_SERVICE_ACCOUNT_CLIENT_EMAIL ||
+    !GOOGLE_SHEETS_SERVICE_ACCOUNT_PRIVATE_KEY ||
     !GOOGLE_SHEET_ID
   ) {
-    const errorMsg = 'Google Sheets API credentials or Sheet ID are not set. Service will not function.';
+    const errorMsg = 'Google Sheets API credentials (client email, private key for sheets) or Sheet ID are not set. Google Sheets service will not function.';
     console.error(errorMsg);
     throw new Error(errorMsg);
   }
 
   const auth = new google.auth.GoogleAuth({
     credentials: {
-      client_email: GOOGLE_SERVICE_ACCOUNT_CLIENT_EMAIL,
-      private_key: GOOGLE_SERVICE_ACCOUNT_PRIVATE_KEY,
+      client_email: GOOGLE_SHEETS_SERVICE_ACCOUNT_CLIENT_EMAIL,
+      private_key: GOOGLE_SHEETS_SERVICE_ACCOUNT_PRIVATE_KEY,
     },
     scopes: ['https://www.googleapis.com/auth/spreadsheets'],
   });
@@ -68,11 +73,11 @@ const HEADER_ROW = [
  * Ensures the sheet exists and has a header row.
  */
 async function ensureSheetAndHeader() {
-  const client = getSheetsClient();
+  const client = await getSheetsClient();
   try {
     // Check if sheet exists
     const spreadsheet = await client.spreadsheets.get({
-        spreadsheetId: GOOGLE_SHEET_ID,
+        spreadsheetId: GOOGLE_SHEET_ID!,
         ranges: [`${SHEET_NAME}!A1`], // Check a cell in the sheet
         fields: 'sheets.properties.title',
     });
@@ -90,7 +95,7 @@ async function ensureSheetAndHeader() {
     if (!sheetExists) {
         console.log(`Sheet "${SHEET_NAME}" not found, creating it.`);
         await client.spreadsheets.batchUpdate({
-            spreadsheetId: GOOGLE_SHEET_ID,
+            spreadsheetId: GOOGLE_SHEET_ID!,
             requestBody: {
                 requests: [
                     { addSheet: { properties: { title: SHEET_NAME } } }
@@ -101,7 +106,7 @@ async function ensureSheetAndHeader() {
     
     // Check header row
     const getResponse = await client.spreadsheets.values.get({
-      spreadsheetId: GOOGLE_SHEET_ID,
+      spreadsheetId: GOOGLE_SHEET_ID!,
       range: `${SHEET_NAME}!A1:I1`,
     });
 
@@ -109,7 +114,7 @@ async function ensureSheetAndHeader() {
         JSON.stringify(getResponse.data.values[0]) !== JSON.stringify(HEADER_ROW)) {
       console.log('Header row missing or incorrect, creating/updating it.');
       await client.spreadsheets.values.update({
-        spreadsheetId: GOOGLE_SHEET_ID,
+        spreadsheetId: GOOGLE_SHEET_ID!,
         range: `${SHEET_NAME}!A1`,
         valueInputOption: 'USER_ENTERED',
         requestBody: {
@@ -123,7 +128,7 @@ async function ensureSheetAndHeader() {
         // This can happen if the sheet truly doesn't exist. The addSheet request should handle it.
         console.warn(`Sheet "${SHEET_NAME}" might not exist initially. Attempting creation.`);
          await client.spreadsheets.batchUpdate({ // Try creating sheet again just in case.
-            spreadsheetId: GOOGLE_SHEET_ID,
+            spreadsheetId: GOOGLE_SHEET_ID!,
             requestBody: {
                 requests: [
                     { addSheet: { properties: { title: SHEET_NAME } } }
@@ -132,7 +137,7 @@ async function ensureSheetAndHeader() {
         });
         // Then try to add header again
          await client.spreadsheets.values.update({
-            spreadsheetId: GOOGLE_SHEET_ID,
+            spreadsheetId: GOOGLE_SHEET_ID!,
             range: `${SHEET_NAME}!A1`,
             valueInputOption: 'USER_ENTERED',
             requestBody: {
@@ -157,7 +162,7 @@ export async function addAppointmentToSheet(
   appointmentData: Omit<AppointmentData, 'rowIndex'>
 ): Promise<AppointmentData> {
   await ensureSheetAndHeader();
-  const client = getSheetsClient();
+  const client = await getSheetsClient();
   const row = [
     appointmentData.id,
     appointmentData.patientName,
@@ -171,7 +176,7 @@ export async function addAppointmentToSheet(
   ];
   try {
     const response = await client.spreadsheets.values.append({
-      spreadsheetId: GOOGLE_SHEET_ID,
+      spreadsheetId: GOOGLE_SHEET_ID!,
       range: `${SHEET_NAME}!A:I`,
       valueInputOption: 'USER_ENTERED',
       insertDataOption: 'INSERT_ROWS',
@@ -179,7 +184,7 @@ export async function addAppointmentToSheet(
         values: [row],
       },
     });
-    console.log('Appointment added to sheet:', response.data);
+    console.log('[Google Sheets Service] Appointment added to sheet:', response.data);
     // Determine the row index of the newly added row
     const updatedRange = response.data.updates?.updatedRange; // e.g., 'Appointments!A10:I10'
     let rowIndex;
@@ -191,7 +196,7 @@ export async function addAppointmentToSheet(
     }
     return { ...appointmentData, rowIndex };
   } catch (error) {
-    console.error('Error adding appointment to Google Sheet:', error);
+    console.error('[Google Sheets Service] Error adding appointment to Google Sheet:', error);
     throw error;
   }
 }
@@ -208,14 +213,15 @@ export async function getAppointmentsFromSheet(filter?: {
   phoneNumber?: string;
 }): Promise<AppointmentData[]> {
   await ensureSheetAndHeader();
-  const client = getSheetsClient();
+  const client = await getSheetsClient();
   try {
     const response = await client.spreadsheets.values.get({
-      spreadsheetId: GOOGLE_SHEET_ID,
+      spreadsheetId: GOOGLE_SHEET_ID!,
       range: `${SHEET_NAME}!A2:I`, // Start from A2 to skip header
     });
     const rows = response.data.values;
     if (!rows || rows.length === 0) {
+      console.log('[Google Sheets Service] No appointments found in sheet or sheet is empty after header.');
       return [];
     }
     let appointments: AppointmentData[] = rows.map((row: any[], index: number) => ({
@@ -246,9 +252,10 @@ export async function getAppointmentsFromSheet(filter?: {
         appointments = appointments.filter(app => app.phoneNumber === filter.phoneNumber);
       }
     }
+    console.log(`[Google Sheets Service] Found ${appointments.length} appointments matching filter:`, filter);
     return appointments;
   } catch (error) {
-    console.error('Error fetching appointments from Google Sheet:', error);
+    console.error('[Google Sheets Service] Error fetching appointments from Google Sheet:', error);
     throw error;
   }
 }
@@ -265,20 +272,20 @@ export async function updateAppointmentInSheet(
   updates: Partial<Omit<AppointmentData, 'id' | 'rowIndex' | 'phoneNumber'>> // ID and phone number shouldn't typically change this way
 ): Promise<boolean> {
   if (!rowIndex) {
-    console.error('Cannot update appointment without rowIndex.');
+    console.error('[Google Sheets Service] Cannot update appointment without rowIndex.');
     return false;
   }
   await ensureSheetAndHeader();
-  const client = getSheetsClient();
+  const client = await getSheetsClient();
 
   // Fetch the current row to only update specified fields
   const existingRowResponse = await client.spreadsheets.values.get({
-    spreadsheetId: GOOGLE_SHEET_ID,
+    spreadsheetId: GOOGLE_SHEET_ID!,
     range: `${SHEET_NAME}!A${rowIndex}:I${rowIndex}`,
   });
 
   if (!existingRowResponse.data.values || existingRowResponse.data.values.length === 0) {
-    console.error(`Row ${rowIndex} not found for update.`);
+    console.error(`[Google Sheets Service] Row ${rowIndex} not found for update.`);
     return false;
   }
 
@@ -297,17 +304,17 @@ export async function updateAppointmentInSheet(
 
   try {
     await client.spreadsheets.values.update({
-      spreadsheetId: GOOGLE_SHEET_ID,
+      spreadsheetId: GOOGLE_SHEET_ID!,
       range: `${SHEET_NAME}!A${rowIndex}:I${rowIndex}`,
       valueInputOption: 'USER_ENTERED',
       requestBody: {
         values: [updatedRow],
       },
     });
-    console.log(`Appointment in row ${rowIndex} updated in sheet.`);
+    console.log(`[Google Sheets Service] Appointment in row ${rowIndex} updated in sheet.`);
     return true;
   } catch (error) {
-    console.error(`Error updating appointment in row ${rowIndex} in Google Sheet:`, error);
+    console.error(`[Google Sheets Service] Error updating appointment in row ${rowIndex} in Google Sheet:`, error);
     throw error;
   }
 }
@@ -315,7 +322,7 @@ export async function updateAppointmentInSheet(
 /**
  * Finds a specific appointment based on criteria.
  * Primarily used to find an appointment to update or cancel.
- * Returns the first match.
+ * Returns the first match after sorting by latest date/time if multiple are found.
  */
 export async function findAppointment(criteria: {
   patientName?: string;
@@ -332,18 +339,22 @@ export async function findAppointment(criteria: {
     });
 
     if (criteria.id) {
-        return appointments.find(app => app.id === criteria.id) || null;
+        const foundById = appointments.find(app => app.id === criteria.id);
+        console.log(`[Google Sheets Service] findAppointment by ID "${criteria.id}": ${foundById ? 'Found' : 'Not found'}`);
+        return foundById || null;
     }
     
-    // If multiple matches, might need more specific criteria or user clarification
-    // For now, return the first one found, or the latest one by date/time if relevant
     if (appointments.length > 0) {
-        // Simple approach: return the first. Could be enhanced to sort by date/time.
-        return appointments.sort((a, b) => {
+        // Sort by date and time, latest first, to get the most recent relevant appointment
+        const sortedAppointments = appointments.sort((a, b) => {
           const dateA = new Date(`${a.appointmentDate}T${a.appointmentTime || '00:00'}`);
           const dateB = new Date(`${b.appointmentDate}T${b.appointmentTime || '00:00'}`);
-          return dateB.getTime() - dateA.getTime(); // Sort descending, latest first
-        })[0];
+          return dateB.getTime() - dateA.getTime(); // Sort descending (latest first)
+        });
+        console.log(`[Google Sheets Service] findAppointment by other criteria found ${sortedAppointments.length} matches, returning latest:`, sortedAppointments[0]);
+        return sortedAppointments[0]; // Return the latest appointment
     }
-    return null;
+    
+    console.log('[Google Sheets Service] findAppointment found no matches for criteria:', criteria);
+    return null; // No appointment found matching criteria
 }
