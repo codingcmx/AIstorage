@@ -39,7 +39,7 @@ import {
   setMilliseconds,
   isValid,
   isFuture,
-  parseISO
+  parseISO // Import parseISO
 } from 'date-fns';
 
 
@@ -48,17 +48,7 @@ const ProcessWhatsAppMessageInputSchema = z.object({
   senderName: z.string().optional().describe("The sender's profile name, if available."),
   messageText: z.string().describe('The text content of the WhatsApp message.'),
   messageId: z.string().describe('The ID of the incoming WhatsApp message.'),
-  timestamp: z.string().refine(
-    (val) => {
-      try {
-        const parsed = parseISO(val);
-        return isValid(parsed);
-      } catch (e) {
-        return false;
-      }
-    }, 
-    { message: "Timestamp must be a valid ISO 8601 date-time string." }
-  ).describe('The timestamp of the incoming message as an ISO 8601 string.'),
+  timestamp: z.string().describe('The timestamp of the incoming message as an ISO 8601 string.'), // Simplified to z.string()
 });
 export type ProcessWhatsAppMessageInput = z.infer<
   typeof ProcessWhatsAppMessageInputSchema
@@ -160,8 +150,26 @@ const processWhatsAppMessageFlow = ai.defineFlow(
     outputSchema: ProcessWhatsAppMessageOutputSchema,
   },
   async (input: ProcessWhatsAppMessageInput): Promise<ProcessWhatsAppMessageOutput> => {
-    const messageReceivedDate = parseISO(input.timestamp); // Parse ISO string to Date object
-    console.log(`[Process Flow - ${input.senderId}] Received message: "${input.messageText}" at ${isValid(messageReceivedDate) ? format(messageReceivedDate, 'yyyy-MM-dd HH:mm:ssXXX') : input.timestamp}`);
+    // Manually parse and validate the timestamp string here
+    const messageReceivedDate = parseISO(input.timestamp);
+    if (!isValid(messageReceivedDate)) {
+      const timestampError = `[Process Flow - ${input.senderId}] CRITICAL: Invalid timestamp received: "${input.timestamp}". Cannot process message.`;
+      console.error(timestampError);
+      // Attempt to send a message back indicating a problem if possible, though this itself might fail.
+      // This response won't go through the normal flow output schema but is a direct attempt.
+      try {
+        await sendWhatsAppMessage(input.senderId, "I'm sorry, there was a problem with the timing of your message. Please try sending it again.");
+      } catch (sendErr) {
+        console.error(`[Process Flow - ${input.senderId}] Failed to send timestamp error message:`, sendErr);
+      }
+      return {
+        responseSent: false,
+        responseText: "Failed due to invalid message timestamp.",
+        error: timestampError,
+      };
+    }
+
+    console.log(`[Process Flow - ${input.senderId}] Received message: "${input.messageText}" at ${format(messageReceivedDate, 'yyyy-MM-dd HH:mm:ssXXX')}. Input:`, JSON.stringify(input));
     
     let responseText = "I'm sorry, I'm not sure how to help with that. Please try rephrasing or ask about appointments.";
     let recognizedIntentData: RecognizeIntentOutput | undefined = undefined;
@@ -230,7 +238,8 @@ const processWhatsAppMessageFlow = ai.defineFlow(
           if (!calendarEvent || !calendarEvent.id) {
             responseText = "I'm sorry, there was an issue creating the calendar event. Please try again.";
             console.error(`[Process Flow - ${input.senderId}] Failed to create calendar event for booking. Calendar response:`, calendarEvent);
-            throw new Error("Failed to create calendar event.");
+            processingErrorDetail = "Failed to create calendar event."; // Capture error before potentially throwing
+            break; 
           }
           console.log(`[Process Flow - ${input.senderId}] Calendar event created: ${calendarEvent.id}`);
 
@@ -277,7 +286,8 @@ const processWhatsAppMessageFlow = ai.defineFlow(
             if (!existingAppointment.rowIndex || !existingAppointment.calendarEventId) {
                responseText = "I found your appointment, but there's an issue with its record needed for rescheduling. Please contact the clinic directly.";
                console.error(`[Process Flow - ${input.senderId}] Patient reschedule error: Missing rowIndex (${existingAppointment.rowIndex}) or calendarEventId (${existingAppointment.calendarEventId}) for appointment ID ${existingAppointment.id}`);
-               throw new Error("Patient appointment record incomplete for rescheduling.");
+               processingErrorDetail = "Patient appointment record incomplete for rescheduling.";
+               break;
             }
             console.log(`[Process Flow - ${input.senderId}] Found appointment to reschedule: ID ${existingAppointment.id}, Row ${existingAppointment.rowIndex}, CalendarEventID ${existingAppointment.calendarEventId}`);
 
@@ -346,7 +356,8 @@ const processWhatsAppMessageFlow = ai.defineFlow(
              if (!appointmentToCancel.rowIndex || !appointmentToCancel.calendarEventId) {
                responseText = "I found your appointment, but there's an issue with its record needed for cancellation. Please contact the clinic directly.";
                console.error(`[Process Flow - ${input.senderId}] Patient cancel error: Missing rowIndex (${appointmentToCancel.rowIndex}) or calendarEventId (${appointmentToCancel.calendarEventId}) for appointment ID ${appointmentToCancel.id}`);
-               throw new Error("Patient appointment record incomplete for cancellation.");
+               processingErrorDetail = "Patient appointment record incomplete for cancellation.";
+               break;
             }
             console.log(`[Process Flow - ${input.senderId}] Found appointment to cancel: ID ${appointmentToCancel.id}, Row ${appointmentToCancel.rowIndex}, CalendarEventID ${appointmentToCancel.calendarEventId}`);
             await updateAppointmentInSheet(appointmentToCancel.rowIndex, { status: 'cancelled', notes: `${appointmentToCancel.notes || ''}\nCancelled by patient on ${format(new Date(), 'yyyy-MM-dd HH:mm')}. WA Msg ID: ${input.messageId}` });
@@ -354,7 +365,7 @@ const processWhatsAppMessageFlow = ai.defineFlow(
             responseText = `Your appointment for ${appointmentToCancel.reason} on ${appointmentToCancel.appointmentDate} at ${appointmentToCancel.appointmentTime} has been cancelled.`;
           } else { // Doctor cancelling
             const patientNameToCancel = entities?.patient_name as string;
-            const dateToCancel = entities?.date as string; // Date from intent might be relative ("today")
+            const dateToCancel = entities?.date as string; 
 
             if (!patientNameToCancel) {
                 responseText = "Doctor, please provide the patient name to cancel. Format: /cancel [Patient Name] appointment (optionally add 'for YYYY-MM-DD' or 'for today')";
@@ -362,14 +373,13 @@ const processWhatsAppMessageFlow = ai.defineFlow(
                 break;
             }
             console.log(`[Process Flow - ${input.senderId}] Doctor cancelling for patient: "${patientNameToCancel}"${dateToCancel ? ` on ${dateToCancel}` : ''}.`);
-            // If dateToCancel is "today", ensure it's formatted as YYYY-MM-DD for the query
             const specificDateToQuery = (dateToCancel === format(new Date(), 'yyyy-MM-dd') || dateToCancel?.toLowerCase() === 'today') 
                                          ? format(new Date(), 'yyyy-MM-dd') 
-                                         : dateToCancel; // Use the parsed date if not today
+                                         : dateToCancel; 
 
             const appointmentToCancel = await findAppointment({ 
                 patientName: patientNameToCancel, 
-                date: specificDateToQuery, // Use the potentially resolved date string
+                date: specificDateToQuery, 
                 status: ['booked', 'pending_confirmation', 'rescheduled'] 
             });
 
@@ -394,7 +404,6 @@ const processWhatsAppMessageFlow = ai.defineFlow(
             }
             const startDate = entities?.start_date ? ` from ${entities.start_date}` : '';
             const endDate = entities?.end_date ? ` until ${entities.end_date}` : '';
-            // TODO: Implement persistent storage for pause state for true production readiness
             responseText = `Okay, doctor. I will notionally pause new bookings${startDate}${endDate}. (Note: This system currently relies on direct '/resume bookings' command and does not automatically block bookings during this period without further persistent state setup).`;
             console.log(`[Process Flow - ${input.senderId}] Doctor command: Pause bookings${startDate}${endDate}. This is a notional pause.`);
             break;
@@ -404,7 +413,6 @@ const processWhatsAppMessageFlow = ai.defineFlow(
                 console.warn(`[Process Flow - ${input.senderId}] Unauthorized attempt to resume bookings by non-doctor.`);
                 break;
             }
-            // TODO: Implement logic to clear persistent pause state
             responseText = "Okay, doctor. Bookings are now notionally resumed.";
             console.log(`[Process Flow - ${input.senderId}] Doctor command: Resume bookings. This is a notional resumption.`);
             break;
@@ -416,7 +424,7 @@ const processWhatsAppMessageFlow = ai.defineFlow(
             }
             const todayStr = format(new Date(), 'yyyy-MM-dd');
             console.log(`[Process Flow - ${input.senderId}] Doctor command: Cancel all meetings for today (${todayStr}).`);
-            const todaysAppointments = await getAppointmentsFromSheet({ date: todayStr, status: ['booked', 'rescheduled', 'pending_confirmation'] }); // Include pending
+            const todaysAppointments = await getAppointmentsFromSheet({ date: todayStr, status: ['booked', 'rescheduled', 'pending_confirmation'] }); 
             if (todaysAppointments.length === 0) {
                 responseText = "Doctor, there are no booked or rescheduled appointments for today to cancel.";
                 console.log(`[Process Flow - ${input.senderId}] No appointments to cancel for today.`);
@@ -435,7 +443,6 @@ const processWhatsAppMessageFlow = ai.defineFlow(
                         patientNotifications.push(`${app.patientName} (${app.appointmentTime})`);
                     } catch (e: any) {
                         console.error(`[Process Flow - ${input.senderId}] Error cancelling appointment ID ${app.id} for 'cancel all today':`, e);
-                        // Potentially collect errors to inform the doctor
                     }
                 } else {
                      console.warn(`[Process Flow - ${input.senderId}] Skipping appointment ID ${app.id} for 'cancel all today' due to missing rowIndex (${app.rowIndex}) or calendarEventId (${app.calendarEventId}).`);
@@ -475,9 +482,9 @@ const processWhatsAppMessageFlow = ai.defineFlow(
         }
       }
     } catch (flowError: any) {
-      console.error(`[Process Flow - ${input.senderId}] CRITICAL ERROR in processWhatsAppMessageFlow:`, flowError.message || String(flowError), flowError.stack);
+      console.error(`[Process Flow - ${input.senderId}] CRITICAL ERROR in processWhatsAppMessageFlow's main try block:`, flowError.message || String(flowError), flowError.stack);
       responseText = "I'm sorry, an internal error occurred while processing your request. Please try again in a few moments. If the problem persists, please contact the clinic directly.";
-      processingErrorDetail = flowError.message || String(flowError); // Capture the processing error
+      processingErrorDetail = flowError.message || String(flowError); 
     } finally {
       console.log(`[Process Flow - ${input.senderId}] Attempting to send final response: "${responseText}"`);
       try {
@@ -486,7 +493,6 @@ const processWhatsAppMessageFlow = ai.defineFlow(
         if (!sendResult.success) {
             const sendErrorMessage = `Failed to send WhatsApp response: ${sendResult.error}`;
             console.error(`[Process Flow - ${input.senderId}] ${sendErrorMessage}`);
-            // If there wasn't a processing error already, the sending error becomes the primary error.
             if (!processingErrorDetail) { 
                 processingErrorDetail = sendErrorMessage;
             }
@@ -497,7 +503,6 @@ const processWhatsAppMessageFlow = ai.defineFlow(
         const sendExceptionMessage = `Exception during sendWhatsAppMessage: ${sendException.message || String(sendException)}`;
         console.error(`[Process Flow - ${input.senderId}] ${sendExceptionMessage}`, sendException.stack);
         finalResponseSent = false;
-         // If there wasn't a processing error already, the sending exception becomes the primary error.
         if (!processingErrorDetail) {
             processingErrorDetail = sendExceptionMessage;
         }
@@ -509,8 +514,10 @@ const processWhatsAppMessageFlow = ai.defineFlow(
         responseSent: finalResponseSent,
         responseText: responseText,
         intentData: recognizedIntentData, 
-        error: processingErrorDetail, // This will now include errors from processing OR sending
+        error: processingErrorDetail,
     };
   }
 );
 
+
+    
