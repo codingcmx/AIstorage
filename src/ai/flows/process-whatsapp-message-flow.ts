@@ -39,7 +39,7 @@ import {
   setMilliseconds,
   isValid,
   isFuture,
-  parseISO // Import parseISO
+  parseISO
 } from 'date-fns';
 
 
@@ -48,7 +48,7 @@ const ProcessWhatsAppMessageInputSchema = z.object({
   senderName: z.string().optional().describe("The sender's profile name, if available."),
   messageText: z.string().describe('The text content of the WhatsApp message.'),
   messageId: z.string().describe('The ID of the incoming WhatsApp message.'),
-  timestamp: z.string().describe('The timestamp of the incoming message as an ISO 8601 string.'), // Simplified to z.string()
+  timestamp: z.string().describe('The timestamp of the incoming message as an ISO 8601 string.'),
 });
 export type ProcessWhatsAppMessageInput = z.infer<
   typeof ProcessWhatsAppMessageInputSchema
@@ -150,13 +150,10 @@ const processWhatsAppMessageFlow = ai.defineFlow(
     outputSchema: ProcessWhatsAppMessageOutputSchema,
   },
   async (input: ProcessWhatsAppMessageInput): Promise<ProcessWhatsAppMessageOutput> => {
-    // Manually parse and validate the timestamp string here
     const messageReceivedDate = parseISO(input.timestamp);
     if (!isValid(messageReceivedDate)) {
       const timestampError = `[Process Flow - ${input.senderId}] CRITICAL: Invalid timestamp received: "${input.timestamp}". Cannot process message.`;
       console.error(timestampError);
-      // Attempt to send a message back indicating a problem if possible, though this itself might fail.
-      // This response won't go through the normal flow output schema but is a direct attempt.
       try {
         await sendWhatsAppMessage(input.senderId, "I'm sorry, there was a problem with the timing of your message. Please try sending it again.");
       } catch (sendErr) {
@@ -238,7 +235,7 @@ const processWhatsAppMessageFlow = ai.defineFlow(
           if (!calendarEvent || !calendarEvent.id) {
             responseText = "I'm sorry, there was an issue creating the calendar event. Please try again.";
             console.error(`[Process Flow - ${input.senderId}] Failed to create calendar event for booking. Calendar response:`, calendarEvent);
-            processingErrorDetail = "Failed to create calendar event."; // Capture error before potentially throwing
+            processingErrorDetail = "Failed to create calendar event."; 
             break; 
           }
           console.log(`[Process Flow - ${input.senderId}] Calendar event created: ${calendarEvent.id}`);
@@ -467,16 +464,23 @@ const processWhatsAppMessageFlow = ai.defineFlow(
           break;
         case 'other':
         default: {
-          const genericPrompt = `The user (a ${senderType}) sent: "${input.messageText}". Their intent was not specifically recognized by the booking system. Provide a helpful, polite, and concise response as a medical clinic AI assistant. If it seems like a question you can answer generally (e.g. about common cold, headache), provide a very brief, general, non-diagnostic suggestion and advise to book an appointment for specifics. If it's unclear, apologize and state you can primarily help with appointments.`;
+          const conversationalPrompt = `You are MediMate AI, a friendly and helpful WhatsApp assistant for Dr. [Doctor's Name]'s clinic.
+The user (a ${senderType}) sent: "${input.messageText}".
+Your primary functions are to help with booking, rescheduling, or cancelling appointments. You can also answer simple questions about the clinic like opening hours.
+If the user's message seems related to these functions, guide them or ask for clarification.
+If the message is a general health query, provide a very brief, general, non-diagnostic piece of advice and strongly recommend booking an appointment for any medical concerns. Do NOT attempt to diagnose or give specific medical advice.
+If the message is a simple greeting or social interaction, respond politely and conversationally.
+If the message is completely unrelated or very unclear, politely state that you can primarily assist with appointments and clinic information.
+Keep your responses concise and helpful.`;
           try {
-            console.log(`[Process Flow - ${input.senderId}] Fallback to generic AI prompt for message: "${input.messageText}"`);
+            console.log(`[Process Flow - ${input.senderId}] Fallback to conversational AI prompt for message: "${input.messageText}"`);
             const {output} = await ai.generate({ 
-              prompt: genericPrompt,
+              prompt: conversationalPrompt,
               model: ai.getModel(), 
             });
-            responseText = output?.text || "I'm sorry, I didn't quite understand that. I can help with booking, rescheduling, or cancelling appointments. How can I assist you?";
+            responseText = output?.text || "I'm sorry, I didn't quite understand that. I can help with booking, rescheduling, or cancelling appointments, or provide information about the clinic. How can I assist you?";
           } catch (genError: any) {
-             console.error(`[Process Flow - ${input.senderId}] Error generating fallback AI response:`, genError);
+             console.error(`[Process Flow - ${input.senderId}] Error generating conversational AI response:`, genError);
              responseText = "I'm sorry, I'm having a little trouble understanding. Could you please rephrase? You can ask me to book, reschedule, or cancel an appointment.";
           }
         }
@@ -518,6 +522,3 @@ const processWhatsAppMessageFlow = ai.defineFlow(
     };
   }
 );
-
-
-    
