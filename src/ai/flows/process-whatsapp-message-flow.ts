@@ -14,7 +14,7 @@
 import {ai} from '@/ai/genkit';
 import {z}from 'genkit';
 import {recognizeIntent, type RecognizeIntentOutput} from './intent-recognition';
-import { RecognizeIntentFunctionOutputSchema } from '../schemas'; 
+import { RecognizeIntentFunctionOutputSchema } from '../schemas';
 import { sendWhatsAppMessage } from '@/services/whatsapp-service';
 import {
   addAppointmentToSheet,
@@ -152,7 +152,7 @@ const processWhatsAppMessageFlow = ai.defineFlow(
   async (input: ProcessWhatsAppMessageInput): Promise<ProcessWhatsAppMessageOutput> => {
     let messageReceivedDate: Date;
     try {
-        messageReceivedDate = parseISO(input.timestamp);
+        messageReceivedDate = parseISO(input.timestamp); // input.timestamp is now an ISO string
         if (!isValid(messageReceivedDate)) {
             throw new Error(`Invalid timestamp string: ${input.timestamp}`);
         }
@@ -172,7 +172,7 @@ const processWhatsAppMessageFlow = ai.defineFlow(
     }
 
     console.log(`[Process Flow - ${input.senderId}] Received message: "${input.messageText}" at ${format(messageReceivedDate, 'yyyy-MM-dd HH:mm:ssXXX')}. Input:`, JSON.stringify(input));
-    
+
     let responseText = "I'm sorry, I'm not sure how to help with that. Please try rephrasing or ask about appointments.";
     let recognizedIntentData: RecognizeIntentOutput | undefined = undefined;
     let finalResponseSent = false;
@@ -200,7 +200,7 @@ const processWhatsAppMessageFlow = ai.defineFlow(
           if (!dateFromEntities) {
             responseText = "Sure, I can help you book an appointment! What day were you thinking of?";
             console.log(`[Process Flow - ${input.senderId}] Booking: Date missing. Asking for date.`);
-            break; 
+            break;
           }
 
           // Step 2: Date is present, ask for time if missing
@@ -224,14 +224,14 @@ const processWhatsAppMessageFlow = ai.defineFlow(
             console.warn(`[Process Flow - ${input.senderId}] Booking failed: Past date/time. Parsed: ${appointmentDateTime}`);
             break;
           }
-          
+
           // Step 3: Date and Time are valid. Ask for reason if missing.
           if (!reasonFromEntities) {
             responseText = `Got it, ${format(appointmentDateTime, 'MMM d, yyyy')} at ${format(appointmentDateTime, 'h:mm a')}. And what is the reason for your visit?`;
             console.log(`[Process Flow - ${input.senderId}] Booking: Reason missing for ${format(appointmentDateTime, 'yyyy-MM-dd HH:mm')}. Asking for reason.`);
-            break; 
+            break;
           }
-          
+
           // All details present (date, time, reason). Proceed with booking.
           const finalReason = reasonFromEntities; // Already checked it exists
           console.log(`[Process Flow - ${input.senderId}] Booking: All details present. Date: ${dateFromEntities}, Time: ${timeFromEntities}, Reason: ${finalReason}. Parsed DateTime: ${appointmentDateTime}`);
@@ -257,7 +257,7 @@ const processWhatsAppMessageFlow = ai.defineFlow(
           const appointmentStart = appointmentDateTime;
           const appointmentEnd = addMinutes(appointmentStart, 60); // Assuming 1-hour appointments
 
-          const newAppointmentId = input.messageId; 
+          const newAppointmentId = input.messageId;
 
           const calendarEventData: CalendarEventArgs = {
             summary: `Appt: ${finalReason} - ${input.senderName || input.senderId}`,
@@ -271,8 +271,8 @@ const processWhatsAppMessageFlow = ai.defineFlow(
           if (!calendarEvent || !calendarEvent.id) {
             responseText = "I'm sorry, there was an issue creating the calendar event. Please try again.";
             console.error(`[Process Flow - ${input.senderId}] Failed to create calendar event for booking. Calendar response:`, calendarEvent);
-            processingErrorDetail = "Failed to create calendar event."; 
-            break; 
+            processingErrorDetail = "Failed to create calendar event.";
+            break;
           }
           console.log(`[Process Flow - ${input.senderId}] Calendar event created: ${calendarEvent.id}`);
 
@@ -398,7 +398,7 @@ const processWhatsAppMessageFlow = ai.defineFlow(
             responseText = `Your appointment for ${appointmentToCancel.reason} on ${appointmentToCancel.appointmentDate} at ${appointmentToCancel.appointmentTime} has been cancelled.`;
           } else { // Doctor cancelling
             const patientNameToCancel = entities?.patient_name as string;
-            const dateToCancel = entities?.date as string; 
+            const dateToCancel = entities?.date as string;
 
             if (!patientNameToCancel) {
                 responseText = "Doctor, please provide the patient name to cancel. Format: /cancel [Patient Name] appointment (optionally add 'for YYYY-MM-DD' or 'for today')";
@@ -406,14 +406,14 @@ const processWhatsAppMessageFlow = ai.defineFlow(
                 break;
             }
             console.log(`[Process Flow - ${input.senderId}] Doctor cancelling for patient: "${patientNameToCancel}"${dateToCancel ? ` on ${dateToCancel}` : ''}.`);
-            const specificDateToQuery = (dateToCancel === format(new Date(), 'yyyy-MM-dd') || dateToCancel?.toLowerCase() === 'today') 
-                                         ? format(new Date(), 'yyyy-MM-dd') 
-                                         : dateToCancel; 
+            const specificDateToQuery = (dateToCancel === format(new Date(), 'yyyy-MM-dd') || dateToCancel?.toLowerCase() === 'today')
+                                         ? format(new Date(), 'yyyy-MM-dd')
+                                         : dateToCancel;
 
-            const appointmentToCancel = await findAppointment({ 
-                patientName: patientNameToCancel, 
-                date: specificDateToQuery, 
-                status: ['booked', 'pending_confirmation', 'rescheduled'] 
+            const appointmentToCancel = await findAppointment({
+                patientName: patientNameToCancel,
+                date: specificDateToQuery,
+                status: ['booked', 'pending_confirmation', 'rescheduled']
             });
 
              if (!appointmentToCancel || !appointmentToCancel.rowIndex || !appointmentToCancel.calendarEventId) {
@@ -457,7 +457,7 @@ const processWhatsAppMessageFlow = ai.defineFlow(
             }
             const todayStr = format(new Date(), 'yyyy-MM-dd');
             console.log(`[Process Flow - ${input.senderId}] Doctor command: Cancel all meetings for today (${todayStr}).`);
-            const todaysAppointments = await getAppointmentsFromSheet({ date: todayStr, status: ['booked', 'rescheduled', 'pending_confirmation'] }); 
+            const todaysAppointments = await getAppointmentsFromSheet({ date: todayStr, status: ['booked', 'rescheduled', 'pending_confirmation'] });
             if (todaysAppointments.length === 0) {
                 responseText = "Doctor, there are no booked or rescheduled appointments for today to cancel.";
                 console.log(`[Process Flow - ${input.senderId}] No appointments to cancel for today.`);
@@ -501,7 +501,7 @@ const processWhatsAppMessageFlow = ai.defineFlow(
         case 'other':
         default: {
           const conversationalPrompt = `You are MediMate AI, a friendly and helpful WhatsApp assistant for Dr. [Doctor's Name]'s clinic.
-The user (a ${senderType}) sent: "${input.messageText}". Your previous response (if any) was part of an ongoing conversation.
+The user (a ${senderType}) sent: "${input.messageText}".
 Your primary functions are to help with booking, rescheduling, or cancelling appointments. You can also answer simple questions about the clinic like opening hours.
 If the user's message seems related to these functions, guide them or ask for clarification.
 If the message is a general health query, provide a very brief, general, non-diagnostic piece of advice and strongly recommend booking an appointment for any medical concerns. Do NOT attempt to diagnose or give specific medical advice.
@@ -510,9 +510,9 @@ If the message is completely unrelated or very unclear, politely state that you 
 Keep your responses concise and helpful.`;
           try {
             console.log(`[Process Flow - ${input.senderId}] Fallback to conversational AI prompt for message: "${input.messageText}"`);
-            const {output} = await ai.generate({ 
+            const {output} = await ai.generate({
               prompt: conversationalPrompt,
-              model: ai.getModel(), 
+              model: ai.getModel(),
             });
             responseText = output?.text || "I'm sorry, I didn't quite understand that. I can help with booking, rescheduling, or cancelling appointments, or provide information about the clinic. How can I assist you?";
           } catch (genError: any) {
@@ -525,7 +525,7 @@ Keep your responses concise and helpful.`;
     } catch (flowError: any) {
       console.error(`[Process Flow - ${input.senderId}] CRITICAL ERROR in processWhatsAppMessageFlow's main try block:`, flowError.message || String(flowError), flowError.stack);
       responseText = "I'm sorry, an internal error occurred while processing your request. Please try again in a few moments. If the problem persists, please contact the clinic directly.";
-      processingErrorDetail = `Flow error: ${flowError.message || String(flowError)}`; 
+      processingErrorDetail = `Flow error: ${flowError.message || String(flowError)}`;
     } finally {
       console.log(`[Process Flow - ${input.senderId}] Attempting to send final response: "${responseText}"`);
       try {
@@ -534,7 +534,7 @@ Keep your responses concise and helpful.`;
         if (!sendResult.success) {
             const sendErrorMessage = `Failed to send WhatsApp response: ${sendResult.error}`;
             console.error(`[Process Flow - ${input.senderId}] ${sendErrorMessage}`);
-            if (!processingErrorDetail) { 
+            if (!processingErrorDetail) {
                 processingErrorDetail = sendErrorMessage;
             }
         } else {
@@ -554,11 +554,8 @@ Keep your responses concise and helpful.`;
     return {
         responseSent: finalResponseSent,
         responseText: responseText,
-        intentData: recognizedIntentData, 
+        intentData: recognizedIntentData,
         error: processingErrorDetail,
     };
   }
 );
-
-
-    
