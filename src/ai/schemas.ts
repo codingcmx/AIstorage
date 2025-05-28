@@ -34,4 +34,3 @@ export type RecognizeIntentOutput = z.infer<typeof RecognizeIntentFunctionOutput
 // This does NOT include `originalMessage` as it's added by the wrapper.
 export const RecognizeIntentPromptOutputSchema = RecognizeIntentFunctionOutputSchema.omit({originalMessage: true});
 export type RecognizeIntentPromptOutputType = z.infer<typeof RecognizeIntentPromptOutputSchema>;
-

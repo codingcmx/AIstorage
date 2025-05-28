@@ -15,32 +15,18 @@ interface HandleUserMessageResult {
 }
 
 export async function handleUserMessage(messageText: string, senderType: SenderType): Promise<HandleUserMessageResult> {
-  console.log(`[Web UI Simulation] Handling message from ${senderType}: "${messageText}"`);
+  console.log(`[Web UI Action] handleUserMessage: Received message "${messageText}" from ${senderType}`);
   let intentResult: RecognizeIntentOutput | undefined;
   let responseText: string;
 
   try {
-    try {
-      intentResult = await recognizeIntent({ message: messageText, senderType });
-      console.log(`[Web UI Simulation] recognizeIntent successful. Intent: ${intentResult.intent}, Entities: ${JSON.stringify(intentResult.entities)}`);
-    } catch (intentError: any) {
-      console.error(
-        "[Web UI Simulation] CRITICAL ERROR during recognizeIntent flow:",
-        intentError.message || String(intentError),
-        "Stack:", intentError.stack,
-        "Detail:", intentError.detail || 'N/A',
-        "Original Error Object:", JSON.stringify(intentError, Object.getOwnPropertyNames(intentError))
-      );
-      // Fall through to use generic AI response; the main catch block might also be hit depending on error severity.
-      intentResult = { 
-        intent: 'other', 
-        entities: { error: "Intent recognition failed", originalError: intentError.message || String(intentError) },
-        originalMessage: messageText // Ensure originalMessage is present
-      }; 
-    }
+    console.log(`[Web UI Action] handleUserMessage: Attempting to call recognizeIntent for message: "${messageText}", senderType: ${senderType}`);
+    intentResult = await recognizeIntent({ message: messageText, senderType });
+    console.log(`[Web UI Action] handleUserMessage: recognizeIntent successful. Intent: ${intentResult.intent}, Entities: ${JSON.stringify(intentResult.entities)}`);
 
     const { intent, entities } = intentResult;
-    responseText = "I'm not sure how to help with that. Can you try rephrasing? (Web UI Simulation)"; // Default
+    // Default response for the web UI simulation if no specific case is matched
+    responseText = `(Web UI Sim) Intent: ${intent}. Entities: ${JSON.stringify(entities)}. For actual interaction, please use WhatsApp.`; 
 
     switch (intent) {
       case 'book_appointment':
@@ -95,9 +81,10 @@ If the user's message seems related to these functions, respond as if you are gu
 If the message is a general health query, provide a very brief, general, non-diagnostic piece of advice and strongly recommend booking an appointment for any medical concerns. Do NOT attempt to diagnose or give specific medical advice.
 If the message is a simple greeting or social interaction, respond politely and conversationally.
 If the message is completely unrelated or very unclear, politely state that you can primarily assist with appointments and clinic information in this simulation.
+Emphasize that this is a web UI simulation and actual clinic interactions (like booking confirmation, cancellations) happen via WhatsApp.
 Keep your responses concise and helpful for this web UI simulation.`;
 
-          console.log(`[Web UI Simulation] Attempting conversational AI response for message: "${messageText}" (Intent was '${intent}')`);
+          console.log(`[Web UI Action] handleUserMessage: Fallback to conversational AI prompt for message: "${messageText}" (Intent was '${intent}')`);
           const {output} = await ai.generate({
             prompt: conversationalPrompt,
             model: ai.getModel(), 
@@ -105,39 +92,48 @@ Keep your responses concise and helpful for this web UI simulation.`;
           responseText = output?.text 
                          ? `(Web UI Sim) ${output.text}` 
                          : "I'm sorry, I didn't quite understand that. Could you please rephrase? (Web UI Simulation)";
-          console.log(`[Web UI Simulation] Conversational AI response generated: "${responseText}"`);
+          console.log(`[Web UI Action] handleUserMessage: Conversational AI response generated: "${responseText}"`);
         } catch (generateError: any) {
-          console.error(
-            "[Web UI Simulation] CRITICAL ERROR during ai.generate for fallback:",
-            generateError.message || String(generateError),
+           const genErrorMessage = generateError.message || String(generateError);
+           console.error(
+            `[Web UI Action] CRITICAL ERROR during ai.generate for fallback in handleUserMessage. Message: "${messageText}". Error: ${genErrorMessage}`,
             "Stack:", generateError.stack,
-            "Detail:", generateError.detail || 'N/A',
-            "Original Error Object:", JSON.stringify(generateError, Object.getOwnPropertyNames(generateError))
+            "Genkit Error Detail:", generateError.detail || 'N/A',
+            "Full Error Object:", JSON.stringify(generateError, Object.getOwnPropertyNames(generateError))
           );
-          responseText = "I'm having trouble generating a response right now. (Web UI Simulation)";
+          responseText = "Sorry, I'm having trouble generating a response right now (Web UI Simulation). Please check server logs.";
           return { 
             responseText, 
-            intent: intentResult?.intent, 
-            entities: { ...intentResult?.entities, fallbackError: generateError.message || String(generateError) } 
+            intent: intentResult?.intent || "other_error", 
+            entities: { ...(intentResult?.entities || {}), fallbackError: genErrorMessage, detail: generateError.detail } 
           };
         }
       }
     }
-    console.log(`[Web UI Simulation] Final response constructed. Response: "${responseText}"`);
+    console.log(`[Web UI Action] handleUserMessage: Final response constructed. Response: "${responseText}"`);
     return { responseText, intent: intentResult?.intent, entities: intentResult?.entities };
 
   } catch (error: any) { 
+    const errorMessage = error.message || String(error);
     console.error(
-      "[Web UI Simulation] UNHANDLED OUTER CATCH in handleUserMessage:",
-      error.message || String(error),
+      `[Web UI Action] CRITICAL ERROR in handleUserMessage's main try block for message: "${messageText}". Error: ${errorMessage}`,
       "Stack:", error.stack,
-      "Detail:", error.detail || 'N/A',
-      "Original Error Object:", JSON.stringify(error, Object.getOwnPropertyNames(error))
+      "Genkit Error Detail:", error.detail || 'N/A',
+      "Full Error Object:", JSON.stringify(error, Object.getOwnPropertyNames(error))
     );
+
+    // Determine specific error response based on error type
+    if (error.name === 'GenkitError' && error.status === 'UNAUTHENTICATED') {
+      responseText = "Sorry, there seems to be an authentication issue with the AI service (Web UI Simulation). Please check your API key.";
+    } else if (error.name === 'GenkitError' && error.status === 'INVALID_ARGUMENT') {
+        responseText = `Sorry, there was an issue with the data sent to the AI (Web UI Simulation). Details: ${errorMessage}`;
+    } else {
+      responseText = "Sorry, I encountered an error (Web UI Simulation). Please try again.";
+    }
     return { 
-      responseText: "Sorry, a critical error occurred in the simulation. Please check the server logs.",
-      intent: intentResult?.intent,
-      entities: intentResult?.entities
+      responseText, 
+      intent: intentResult?.intent || "error", 
+      entities: { ...(intentResult?.entities || {}), errorMessage, detail: error.detail }
     };
   }
 }
@@ -166,11 +162,11 @@ export async function getDailySummaryAction(): Promise<string> {
     const { summary } = await generateDailySummary({ appointments: formattedAppointments });
     console.log("[Web UI Action] Generated daily summary text.");
     return summary;
-  } catch (error) {
-    console.error("Error in getDailySummaryAction (Web UI):", error);
+  } catch (error: any) {
     const errorMessage = (typeof error === 'object' && error !== null && 'message' in error)
                          ? String((error as Error).message)
                          : 'Unknown error';
+    console.error(`[Web UI Action] Error in getDailySummaryAction: ${errorMessage}`, error.stack);
     return `Sorry, I couldn't fetch the daily summary for the web UI due to an error: ${errorMessage}`;
   }
 }
