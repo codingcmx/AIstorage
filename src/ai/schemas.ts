@@ -17,7 +17,15 @@ export type RecognizeIntentInput = z.infer<typeof RecognizeIntentInputSchema>;
 // This includes `originalMessage` which is added by the wrapper function.
 export const RecognizeIntentFunctionOutputSchema = z.object({
   intent: z.string().describe('The intent of the message. Examples: book_appointment, reschedule_appointment, cancel_appointment, pause_bookings, resume_bookings, cancel_all_meetings_today, greeting, thank_you, faq_opening_hours, other.'),
-  entities: z.record(z.any()).optional().describe('The extracted entities from the message. Examples: { date: "YYYY-MM-DD", time: "HH:MM" (24hr) or "h:mm a", reason: "description", patient_name: "Patient Name", start_date: "YYYY-MM-DD", end_date: "YYYY-MM-DD" }'),
+  entities: z.object({
+    date: z.string().optional().describe('The date for an appointment or command, e.g., "YYYY-MM-DD".'),
+    time: z.string().optional().describe('The time for an appointment, e.g., "HH:MM" or "h:mm a".'),
+    reason: z.string().optional().describe('The reason for a visit or appointment.'),
+    patient_name: z.string().optional().describe("The patient's name for doctor commands."),
+    start_date: z.string().optional().describe('The start date for pausing bookings, e.g., "YYYY-MM-DD".'),
+    end_date: z.string().optional().describe('The end date for pausing bookings, e.g., "YYYY-MM-DD".'),
+    error: z.string().optional().describe('An error message if intent recognition itself had an issue with understanding specific parts.')
+  }).optional().describe('The extracted entities from the message. All entity fields are optional.'),
   originalMessage: z.string().describe('The original message text.'),
 });
 export type RecognizeIntentOutput = z.infer<typeof RecognizeIntentFunctionOutputSchema>;
@@ -26,3 +34,4 @@ export type RecognizeIntentOutput = z.infer<typeof RecognizeIntentFunctionOutput
 // This does NOT include `originalMessage` as it's added by the wrapper.
 export const RecognizeIntentPromptOutputSchema = RecognizeIntentFunctionOutputSchema.omit({originalMessage: true});
 export type RecognizeIntentPromptOutputType = z.infer<typeof RecognizeIntentPromptOutputSchema>;
+
