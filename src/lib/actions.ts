@@ -25,7 +25,7 @@ export async function handleUserMessage(messageText: string, senderType: SenderT
     console.log(`[Web UI Action] handleUserMessage: recognizeIntent successful. Intent: ${intentResult.intent}, Entities: ${JSON.stringify(intentResult.entities)}`);
 
     const { intent, entities } = intentResult;
-    // Default response for the web UI simulation if no specific case is matched
+    
     responseText = `(Web UI Sim) Intent: ${intent}. Entities: ${JSON.stringify(entities)}. For actual interaction, please use WhatsApp.`; 
 
     switch (intent) {
@@ -87,7 +87,7 @@ Keep your responses concise and helpful for this web UI simulation.`;
           console.log(`[Web UI Action] handleUserMessage: Fallback to conversational AI prompt for message: "${messageText}" (Intent was '${intent}')`);
           const {output} = await ai.generate({
             prompt: conversationalPrompt,
-            model: ai.getModel(), 
+            model: 'googleai/gemini-2.0-flash', 
           });
           responseText = output?.text 
                          ? `(Web UI Sim) ${output.text}` 
@@ -121,8 +121,7 @@ Keep your responses concise and helpful for this web UI simulation.`;
       "Genkit Error Detail:", error.detail || 'N/A',
       "Full Error Object:", JSON.stringify(error, Object.getOwnPropertyNames(error))
     );
-
-    // Determine specific error response based on error type
+    
     if (error.name === 'GenkitError' && error.status === 'UNAUTHENTICATED') {
       responseText = "Sorry, there seems to be an authentication issue with the AI service (Web UI Simulation). Please check your API key.";
     } else if (error.name === 'GenkitError' && error.status === 'INVALID_ARGUMENT') {

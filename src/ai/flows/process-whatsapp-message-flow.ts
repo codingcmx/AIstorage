@@ -27,7 +27,7 @@ import {
   createCalendarEvent,
   updateCalendarEvent,
   deleteCalendarEvent,
-  getCalendarEventsForDateRange, // Import the new function
+  getCalendarEventsForDateRange,
   type CalendarEventArgs,
 } from '@/services/google-calendar-service';
 import {
@@ -162,15 +162,13 @@ const processWhatsAppMessageFlow = ai.defineFlow(
   async (input: ProcessWhatsAppMessageInput): Promise<ProcessWhatsAppMessageOutput> => {
     let messageReceivedDate: Date;
     try {
-        messageReceivedDate = parseISO(input.timestamp);
+        messageReceivedDate = parseISO(input.timestamp); // input.timestamp is already an ISO string
         if (!isValid(messageReceivedDate)) {
-            // This case should ideally be caught by Zod validation if input.timestamp format is wrong
             throw new Error(`Invalid timestamp string: ${input.timestamp}`);
         }
     } catch (e: any) {
         const timestampError = `[Process Flow - ${input.senderId}] CRITICAL: Invalid or unparsable timestamp provided: "${input.timestamp}". Error: ${e.message}. Cannot process message.`;
         console.error(timestampError);
-        // Attempt to send an error message, but this might also fail if senderId is problematic
         try {
             await sendWhatsAppMessage(input.senderId, "I'm sorry, there was a problem with the timing of your message. Please try sending it again.");
         } catch (sendErr) {
@@ -199,14 +197,20 @@ const processWhatsAppMessageFlow = ai.defineFlow(
         message: input.messageText,
         senderType: senderType,
       });
+      // Add more detailed logging for recognized intent and entities
+      console.log(`[Process Flow - ${input.senderId}] Intent Recognition Result: Intent: ${recognizedIntentData.intent}, Entities: ${JSON.stringify(recognizedIntentData.entities)}, Original Message: "${recognizedIntentData.originalMessage}"`);
+
       const {intent, entities, originalMessage} = recognizedIntentData;
-      console.log(`[Process Flow - ${input.senderId}] Intent: ${intent}, Entities:`, JSON.stringify(entities), `Original: "${originalMessage}"`);
+
 
       switch (intent) {
         case 'book_appointment': {
           const reasonFromEntities = entities?.reason as string;
-          const dateFromEntities = entities?.date as string; // Expect YYYY-MM-DD from AI
-          const timeFromEntities = entities?.time as string; // Expect HH:MM or similar from AI
+          let dateFromEntities = entities?.date as string; // Expect YYYY-MM-DD from AI
+          let timeFromEntities = entities?.time as string; // Expect HH:MM or similar from AI
+
+          console.log(`[Process Flow - ${input.senderId}] Booking: Initial entities - Date: ${dateFromEntities}, Time: ${timeFromEntities}, Reason: ${reasonFromEntities}`);
+
 
           // Check if bookings are paused for the requested date
           if (isBookingPaused && dateFromEntities) {
@@ -220,7 +224,7 @@ const processWhatsAppMessageFlow = ai.defineFlow(
                     if (isPausedForRequestedDate) {
                         responseText = `I'm sorry, we are not accepting new bookings for ${format(requestedDateObj, 'MMMM do')}${pauseEndDate && !isSameDay(pauseStartDate!, pauseEndDate) ? ` (paused until ${format(pauseEndDate, 'MMMM do')})` : ''}. Please try a different date or check back later.`;
                         console.log(`[Process Flow - ${input.senderId}] Booking attempt for ${dateFromEntities} during paused period. Pause: ${pauseStartDate ? format(pauseStartDate, 'yyyy-MM-dd') : 'N/A'} - ${pauseEndDate ? format(pauseEndDate, 'yyyy-MM-dd') : 'N/A'}`);
-                        break; // Exit the switch case
+                        break; 
                     }
                 }
             } catch(e) {
@@ -327,7 +331,6 @@ const processWhatsAppMessageFlow = ai.defineFlow(
         }
 
         case 'reschedule_appointment': {
-          // ... (existing reschedule logic, ensure it checks pause status if relevant)
           const newDateTime = parseDateTime(entities?.date as string, entities?.time as string);
           if (!newDateTime) {
             responseText = `I couldn't understand the new date or time for rescheduling (date: "${entities?.date}", time: "${entities?.time}"). Please provide it clearly.`;
@@ -340,10 +343,9 @@ const processWhatsAppMessageFlow = ai.defineFlow(
               break;
           }
 
-          // Check pause status for reschedule
           if (isBookingPaused) {
              try {
-                const requestedDateObj = newDateTime; // Already a Date object
+                const requestedDateObj = newDateTime; 
                 const isPausedForRequestedDate = 
                     (pauseStartDate && pauseEndDate && isWithinInterval(requestedDateObj, { start: startOfDay(pauseStartDate), end: endOfDay(pauseEndDate) })) ||
                     (pauseStartDate && !pauseEndDate && isSameDay(requestedDateObj, pauseStartDate));
@@ -391,7 +393,7 @@ const processWhatsAppMessageFlow = ai.defineFlow(
               summary: `(RESCHEDULED) Appt: ${existingAppointment.reason} - ${existingAppointment.patientName}`,
             });
             responseText = `Your appointment has been rescheduled to ${format(newStartTime, 'EEEE, MMMM do, yyyy')} at ${format(newStartTime, 'h:mm a')}.`;
-          } else { // Doctor rescheduling
+          } else { 
             const patientNameToReschedule = entities?.patient_name as string;
             if (!patientNameToReschedule) {
                 responseText = "Doctor, please provide the patient name to reschedule. Format: /reschedule [Patient Name] to [YYYY-MM-DD] at [HH:MM]";
@@ -429,7 +431,6 @@ const processWhatsAppMessageFlow = ai.defineFlow(
         }
 
         case 'cancel_appointment': {
-          // ... (existing cancel logic)
            if (senderType === 'patient') {
             console.log(`[Process Flow - ${input.senderId}] Patient cancelling appointment: Finding existing appointment.`);
             const appointmentToCancel = await findAppointment({ phoneNumber: input.senderId, status: ['booked', 'pending_confirmation', 'rescheduled'] });
@@ -448,7 +449,7 @@ const processWhatsAppMessageFlow = ai.defineFlow(
             await updateAppointmentInSheet(appointmentToCancel.rowIndex, { status: 'cancelled', notes: `${appointmentToCancel.notes || ''}\nCancelled by patient on ${format(new Date(), 'yyyy-MM-dd HH:mm')}. WA Msg ID: ${input.messageId}` });
             await deleteCalendarEvent(appointmentToCancel.calendarEventId);
             responseText = `Your appointment for ${appointmentToCancel.reason} on ${appointmentToCancel.appointmentDate} at ${appointmentToCancel.appointmentTime} has been cancelled.`;
-          } else { // Doctor cancelling
+          } else { 
             const patientNameToCancel = entities?.patient_name as string;
             const dateToCancel = entities?.date as string;
 
@@ -487,8 +488,8 @@ const processWhatsAppMessageFlow = ai.defineFlow(
                 console.warn(`[Process Flow - ${input.senderId}] Unauthorized attempt to pause bookings by non-doctor.`);
                 break;
             }
-            const startDateStr = entities?.start_date as string; // Expect YYYY-MM-DD
-            const endDateStr = entities?.end_date as string;   // Expect YYYY-MM-DD
+            const startDateStr = entities?.start_date as string; 
+            const endDateStr = entities?.end_date as string;   
 
             let conflictsMessage = "";
             let parsedPauseStart: Date | null = null;
@@ -507,7 +508,6 @@ const processWhatsAppMessageFlow = ai.defineFlow(
                 } catch { parsedPauseEnd = null; }
             }
             
-            // If only start date is provided, pause for that single day
             if (parsedPauseStart && !parsedPauseEnd) {
                 parsedPauseEnd = parsedPauseStart;
             }
@@ -534,15 +534,15 @@ const processWhatsAppMessageFlow = ai.defineFlow(
                 pauseEndDate = parsedPauseEnd;
                 responseText = `Okay, doctor. New bookings are now paused from ${format(pauseStartDate, 'MMMM do, yyyy')} to ${format(pauseEndDate, 'MMMM do, yyyy')}.${conflictsMessage}`;
                 console.log(`[Process Flow - ${input.senderId}] Bookings paused from ${format(pauseStartDate, 'yyyy-MM-dd')} to ${format(pauseEndDate, 'yyyy-MM-dd')}.${conflictsMessage ? ' Conflicts noted.' : ''}`);
-            } else if (parsedPauseStart) { // Only start_date provided, pause indefinitely from that date (or treat as single day - current logic: single day)
+            } else if (parsedPauseStart) { 
                 isBookingPaused = true;
                 pauseStartDate = parsedPauseStart;
-                pauseEndDate = parsedPauseStart; // Pausing for a single day if no end date
+                pauseEndDate = parsedPauseStart; 
                 responseText = `Okay, doctor. New bookings are now paused for ${format(pauseStartDate, 'MMMM do, yyyy')}.`;
                 console.log(`[Process Flow - ${input.senderId}] Bookings paused for single day: ${format(pauseStartDate, 'yyyy-MM-dd')}`);
-            } else { // No valid dates provided with pause command
-                isBookingPaused = true; // Pause indefinitely if no dates specified
-                pauseStartDate = null;  // Or interpret as today? For now, indefinite general pause.
+            } else { 
+                isBookingPaused = true; 
+                pauseStartDate = null;  
                 pauseEndDate = null;
                 responseText = "Okay, doctor. New bookings are now paused indefinitely until you resume them. If you meant to pause for specific dates, please try again with the dates (e.g., '/pause bookings from YYYY-MM-DD to YYYY-MM-DD').";
                 console.log(`[Process Flow - ${input.senderId}] Bookings paused indefinitely (no dates specified).`);
@@ -563,7 +563,6 @@ const processWhatsAppMessageFlow = ai.defineFlow(
             break;
         }
         case 'cancel_all_meetings_today': {
-           // ... (existing logic)
             if (senderType !== 'doctor') {
                 responseText = "Sorry, only doctors can cancel all meetings.";
                 console.warn(`[Process Flow - ${input.senderId}] Unauthorized attempt to cancel all meetings by non-doctor.`);
@@ -626,11 +625,11 @@ Keep your responses concise and helpful for WhatsApp. Be friendly and empathetic
             console.log(`[Process Flow - ${input.senderId}] Fallback to conversational AI prompt for message: "${input.messageText}" (Intent: ${intent}, Entities: ${JSON.stringify(entities)})`);
             const {output} = await ai.generate({
               prompt: conversationalPrompt,
-              model: ai.getModel(),
+              model: 'googleai/gemini-2.0-flash', 
             });
             responseText = output?.text || "I'm sorry, I didn't quite understand that. I can help with booking, rescheduling, or cancelling appointments, or provide information about the clinic. How can I assist you?";
           } catch (genError: any) {
-             console.error(`[Process Flow - ${input.senderId}] Error generating conversational AI response:`, genError);
+             console.error(`[Process Flow - ${input.senderId}] Error generating conversational AI response:`, genError.message || String(genError), genError.stack);
              responseText = "I'm sorry, I'm having a little trouble understanding. Could you please rephrase? You can ask me to book, reschedule, or cancel an appointment.";
              processingErrorDetail = `Conversational AI generation failed: ${genError.message || String(genError)}`;
           }
@@ -639,7 +638,6 @@ Keep your responses concise and helpful for WhatsApp. Be friendly and empathetic
     } catch (flowError: any) {
       console.error(`[Process Flow - ${input.senderId}] CRITICAL ERROR in processWhatsAppMessageFlow's main try block:`, flowError.message || String(flowError), flowError.stack);
       responseText = "I'm sorry, an internal error occurred while processing your request. Please try again in a few moments. If the problem persists, please contact the clinic directly.";
-      // Ensure processingErrorDetail captures this critical flow error
       processingErrorDetail = `Flow error: ${flowError.message || String(flowError)}. Stack: ${flowError.stack}`;
     } finally {
       console.log(`[Process Flow - ${input.senderId}] Attempting to send final response: "${responseText}"`);
@@ -649,7 +647,6 @@ Keep your responses concise and helpful for WhatsApp. Be friendly and empathetic
         if (!sendResult.success) {
             const sendErrorMessage = `Failed to send WhatsApp response: ${sendResult.error}`;
             console.error(`[Process Flow - ${input.senderId}] ${sendErrorMessage}`);
-            // If there wasn't a prior processing error, this send failure becomes the primary error.
             if (!processingErrorDetail) {
                 processingErrorDetail = sendErrorMessage;
             }
@@ -660,7 +657,6 @@ Keep your responses concise and helpful for WhatsApp. Be friendly and empathetic
         const sendExceptionMessage = `Exception during sendWhatsAppMessage: ${sendException.message || String(sendException)}`;
         console.error(`[Process Flow - ${input.senderId}] ${sendExceptionMessage}`, sendException.stack);
         finalResponseSent = false;
-         // If there wasn't a prior processing error, this send failure becomes the primary error.
         if (!processingErrorDetail) {
             processingErrorDetail = sendExceptionMessage;
         }
@@ -671,7 +667,7 @@ Keep your responses concise and helpful for WhatsApp. Be friendly and empathetic
     return {
         responseSent: finalResponseSent,
         responseText: responseText,
-        intentData: recognizedIntentData, // This will include the originalMessage
+        intentData: recognizedIntentData, 
         error: processingErrorDetail,
     };
   }
