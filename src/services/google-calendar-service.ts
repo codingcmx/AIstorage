@@ -3,6 +3,8 @@
 'use server';
 
 import {google, calendar_v3} from 'googleapis';
+import { parseISO, format, startOfDay, endOfDay } from 'date-fns';
+
 
 const GOOGLE_CALENDAR_SERVICE_ACCOUNT_CLIENT_EMAIL =
   process.env.GOOGLE_CALENDAR_SERVICE_ACCOUNT_CLIENT_EMAIL;
@@ -119,14 +121,14 @@ export async function getCalendarEventsForDay(date: string): Promise<calendar_v3
   const client = await getCalendarClient();
   const tz = await getDefaultTimezone(client);
 
-  const timeMinDate = new Date(`${date}T00:00:00`);
-  const timeMaxDate = new Date(`${date}T23:59:59`);
-
   try {
+    const dayStart = startOfDay(parseISO(date));
+    const dayEnd = endOfDay(parseISO(date));
+
     const response = await client.events.list({
       calendarId: GOOGLE_CALENDAR_ID!,
-      timeMin: timeMinDate.toISOString(),
-      timeMax: timeMaxDate.toISOString(),
+      timeMin: dayStart.toISOString(),
+      timeMax: dayEnd.toISOString(),
       timeZone: tz,
       singleEvents: true,
       orderBy: 'startTime',
@@ -135,10 +137,50 @@ export async function getCalendarEventsForDay(date: string): Promise<calendar_v3
     console.log(`[Google Calendar Service] Found ${events?.length || 0} events for ${date} in calendar ${GOOGLE_CALENDAR_ID}`);
     return events || [];
   } catch (error: any) {
-    console.error('[Google Calendar Service] Error fetching events:', error.message || String(error), error.stack);
+    console.error(`[Google Calendar Service] Error fetching events for day ${date}:`, error.message || String(error), error.stack);
     throw error;
   }
 }
+
+/**
+ * Lists events from Google Calendar for a given date range.
+ * @param startDateStr The start date to fetch events for (YYYY-MM-DD).
+ * @param endDateStr The end date to fetch events for (YYYY-MM-DD).
+ * @returns A list of calendar events.
+ */
+export async function getCalendarEventsForDateRange(startDateStr: string, endDateStr: string): Promise<calendar_v3.Schema$Event[]> {
+  const client = await getCalendarClient();
+  const tz = await getDefaultTimezone(client);
+
+  try {
+    const timeMin = startOfDay(parseISO(startDateStr));
+    const timeMax = endOfDay(parseISO(endDateStr));
+
+    if (timeMin > timeMax) {
+      console.warn(`[Google Calendar Service] Start date ${startDateStr} is after end date ${endDateStr} in getCalendarEventsForDateRange. Returning empty array.`);
+      return [];
+    }
+    
+    console.log(`[Google Calendar Service] Fetching events from ${format(timeMin, 'yyyy-MM-dd HH:mm:ss')} to ${format(timeMax, 'yyyy-MM-dd HH:mm:ss')} (timezone: ${tz})`);
+
+    const response = await client.events.list({
+      calendarId: GOOGLE_CALENDAR_ID!,
+      timeMin: timeMin.toISOString(),
+      timeMax: timeMax.toISOString(),
+      timeZone: tz,
+      singleEvents: true,
+      orderBy: 'startTime',
+    });
+    const events = response.data.items;
+    console.log(`[Google Calendar Service] Found ${events?.length || 0} events between ${startDateStr} and ${endDateStr} in calendar ${GOOGLE_CALENDAR_ID}`);
+    return events || [];
+  } catch (error: any) {
+    console.error(`[Google Calendar Service] Error fetching events for date range ${startDateStr} - ${endDateStr}:`, error.message || String(error), error.stack);
+    // Consider how to handle parseISO errors if date strings are invalid. For now, it will throw.
+    throw error;
+  }
+}
+
 
 /**
  * Updates an existing calendar event.
@@ -153,7 +195,6 @@ export async function updateCalendarEvent(
   const client = await getCalendarClient();
   const tz = updates.timezone || await getDefaultTimezone(client);
 
-  // Construct the request body carefully, only including fields to be updated
   const requestBody: calendar_v3.Schema$Event = {};
   if (updates.summary) requestBody.summary = updates.summary;
   if (updates.description) requestBody.description = updates.description;
@@ -165,13 +206,12 @@ export async function updateCalendarEvent(
 
   if (Object.keys(requestBody).length === 0) {
     console.warn('[Google Calendar Service] Update called with no fields to update for eventId:', eventId);
-    // Optionally, fetch and return the existing event if no updates are provided
     const existingEvent = await client.events.get({ calendarId: GOOGLE_CALENDAR_ID!, eventId });
     return existingEvent.data;
   }
 
   try {
-    const response = await client.events.patch({ // Use patch for partial updates
+    const response = await client.events.patch({ 
       calendarId: GOOGLE_CALENDAR_ID!,
       eventId: eventId,
       requestBody: requestBody,
@@ -197,8 +237,6 @@ export async function deleteCalendarEvent(eventId: string): Promise<void> {
     });
     console.log('[Google Calendar Service] Event deleted:', eventId);
   } catch (error: any) {
-    // Google Calendar API returns 410 if event is already deleted, which is not an error for us.
-    // It might also return 404 if the event never existed or was deleted by another means.
     if (error.code === 410 || error.code === 404) {
       console.warn(`[Google Calendar Service] Event ${eventId} already deleted or not found. Proceeding as success.`);
     } else {
