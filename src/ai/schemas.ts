@@ -17,7 +17,7 @@ export type RecognizeIntentInput = z.infer<typeof RecognizeIntentInputSchema>;
 // Schema for the *full output* of the exported `recognizeIntent` function.
 // This includes `originalMessage` which is added by the wrapper function.
 export const RecognizeIntentFunctionOutputSchema = z.object({
-  intent: z.string().describe('The intent of the message. Examples: book_appointment, reschedule_appointment, cancel_appointment, pause_bookings, resume_bookings, cancel_all_meetings_today, greeting, thank_you, faq_opening_hours, other.'),
+  intent: z.string().describe('The intent of the message. Examples: book_appointment, reschedule_appointment, cancel_appointment, query_availability, pause_bookings, resume_bookings, cancel_all_meetings_today, greeting, thank_you, faq_opening_hours, other.'),
   entities: z.object({
     date: z.string().optional().describe('The date for an appointment or command, e.g., "YYYY-MM-DD".'),
     time: z.string().optional().describe('The time for an appointment, e.g., "HH:MM" or "h:mm a".'),

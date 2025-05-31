@@ -17,6 +17,8 @@ interface HandleUserMessageResult {
 // Define Doctor's Working Hours (for Web UI simulation)
 const DOCTOR_WORK_START_HOUR = 9; // 9 AM
 const DOCTOR_WORK_END_HOUR = 17; // 5 PM (exclusive, so up to 4:59 PM)
+const FAKE_TIME_SLOTS = ["10:00 AM", "11:00 AM", "02:00 PM", "03:00 PM"];
+
 
 // Helper to parse date and time from entities for Web UI
 function parseDateTimeWeb(dateStr?: string, timeStr?: string): Date | null {
@@ -93,7 +95,7 @@ let webUiConversationContext: {
   lastIntent?: string;
   gatheredDate?: string;
   gatheredTime?: string;
-  currentContextualDate?: string;
+  currentContextualDate?: string; // Date being discussed, e.g., for rescheduling or confirming details.
   gatheredReason?: string;
   gatheredRescheduleNewDate?: string;
   gatheredRescheduleNewTime?: string;
@@ -119,20 +121,27 @@ export async function handleUserMessage(messageText: string, senderType: SenderT
     let { intent, entities } = intentResult;
     console.log(`[Web UI Action] handleUserMessage: recognizeIntent result - Intent: ${intent}, Entities: ${JSON.stringify(entities)}`);
 
-    if (webUiConversationContext.lastIntent === 'book_appointment') {
+    // --- Contextual understanding for multi-turn conversations ---
+    if (webUiConversationContext.lastIntent === 'book_appointment' || webUiConversationContext.lastIntent === 'query_availability_slots_offered') {
       if (!webUiConversationContext.gatheredDate && entities?.date) {
         webUiConversationContext.gatheredDate = entities.date;
-        if (intent !== 'book_appointment') intent = 'book_appointment';
+        if (intent !== 'book_appointment' && intent !== 'query_availability') intent = webUiConversationContext.lastIntent === 'query_availability_slots_offered' ? 'query_availability' : 'book_appointment';
       }
       if (webUiConversationContext.gatheredDate && !webUiConversationContext.gatheredTime && entities?.time) {
         webUiConversationContext.gatheredTime = entities.time;
-        if (intent !== 'book_appointment') intent = 'book_appointment';
+         // If slots were offered, and user picks a time, it's a booking intent
+        if (webUiConversationContext.lastIntent === 'query_availability_slots_offered') {
+            intent = 'book_appointment';
+        } else if (intent !== 'book_appointment') {
+            intent = 'book_appointment';
+        }
       }
       if (webUiConversationContext.gatheredDate && webUiConversationContext.gatheredTime && !webUiConversationContext.gatheredReason && entities?.reason){
         webUiConversationContext.gatheredReason = entities.reason;
         if (intent !== 'book_appointment') intent = 'book_appointment';
       }
-      if ((entities?.date || entities?.time || entities?.reason) && intent === 'other' && webUiConversationContext.lastIntent === 'book_appointment') {
+       // If AI classified as 'other' but entities were picked up in a booking flow, re-classify.
+      if ((entities?.date || entities?.time || entities?.reason) && intent === 'other' && (webUiConversationContext.lastIntent === 'book_appointment' || webUiConversationContext.lastIntent === 'query_availability_slots_offered')) {
          intent = 'book_appointment';
       }
     } else if (webUiConversationContext.lastIntent === 'reschedule_appointment') {
@@ -147,11 +156,58 @@ export async function handleUserMessage(messageText: string, senderType: SenderT
         if ((entities?.date || entities?.time) && intent === 'other' && webUiConversationContext.lastIntent === 'reschedule_appointment') {
              intent = 'reschedule_appointment';
         }
+    } else if (webUiConversationContext.lastIntent === 'query_availability_date_requested' && entities?.date) {
+        intent = 'query_availability'; // User provided date after being asked
+        webUiConversationContext.gatheredDate = entities.date;
     }
+    // --- End Contextual understanding ---
 
 
     switch (intent) {
-      case 'book_appointment':
+      case 'query_availability': {
+        const dateForQuery = webUiConversationContext.gatheredDate || entities?.date;
+        webUiConversationContext.lastIntent = 'query_availability';
+
+        if (!dateForQuery) {
+            responseText = "Sure, I can check available time slots. What date are you interested in?";
+            webUiConversationContext.lastIntent = 'query_availability_date_requested';
+            webUiConversationContext.gatheredDate = undefined;
+            webUiConversationContext.currentContextualDate = undefined;
+        } else {
+            webUiConversationContext.gatheredDate = dateForQuery;
+            webUiConversationContext.currentContextualDate = dateForQuery;
+            const parsedQueryDate = parse(dateForQuery, 'yyyy-MM-dd', new Date());
+
+            if (!isValid(parsedQueryDate)) {
+                responseText = `The date "${dateForQuery}" seems invalid. Could you please provide a valid date like YYYY-MM-DD or "tomorrow"?`;
+                webUiConversationContext.gatheredDate = undefined;
+                webUiConversationContext.currentContextualDate = undefined;
+                break;
+            }
+            if (!isFuture(startOfDay(parsedQueryDate)) && !isSameDay(startOfDay(parsedQueryDate), startOfDay(new Date()))) {
+                 responseText = `The date ${format(parsedQueryDate, 'MMMM do, yyyy')} is in the past. Please provide a current or future date.`;
+                 webUiConversationContext.gatheredDate = undefined;
+                 webUiConversationContext.currentContextualDate = undefined;
+                 break;
+            }
+
+            if (isBookingPausedWeb) {
+                const isPausedForQueryDate =
+                    (pauseStartDateWeb && pauseEndDateWeb && isWithinInterval(parsedQueryDate, { start: startOfDay(pauseStartDateWeb), end: endOfDay(pauseEndDateWeb) })) ||
+                    (pauseStartDateWeb && !pauseEndDateWeb && isSameDay(parsedQueryDate, pauseStartDateWeb));
+                if (isPausedForQueryDate) {
+                    responseText = `I'm sorry, bookings are currently paused for ${format(parsedQueryDate, 'MMMM do')}${pauseEndDateWeb && !isSameDay(pauseStartDateWeb!, pauseEndDateWeb) ? ` (paused until ${format(pauseEndDateWeb, 'MMMM do')})` : ''}. Please try a different date.`;
+                    webUiConversationContext = {}; // Reset context as we can't proceed.
+                    break;
+                }
+            }
+            const displayDate = format(parsedQueryDate, 'MMMM do, yyyy');
+            responseText = `For ${displayDate}, we have the following example slots: ${FAKE_TIME_SLOTS.join(', ')}. Which one would you like, or would you like to book one of these?`;
+            webUiConversationContext.lastIntent = 'query_availability_slots_offered';
+        }
+        break;
+      }
+      case 'book_appointment': {
         const dateForBooking = webUiConversationContext.gatheredDate || entities?.date;
         const timeForBooking = webUiConversationContext.gatheredTime || entities?.time;
         const reasonForBooking = webUiConversationContext.gatheredReason || entities?.reason;
@@ -183,9 +239,10 @@ export async function handleUserMessage(messageText: string, senderType: SenderT
         } else {
           webUiConversationContext.gatheredDate = dateForBooking;
           webUiConversationContext.currentContextualDate = dateForBooking; // Set for follow-ups like reason
+          const parsedDisplayDate = parse(dateForBooking, 'yyyy-MM-dd', new Date());
+          const displayDate = isValid(parsedDisplayDate) ? format(parsedDisplayDate, 'MMMM do, yyyy') : dateForBooking;
+
           if (!timeForBooking) {
-            const parsedDisplayDate = parse(dateForBooking, 'yyyy-MM-dd', new Date());
-            const displayDate = isValid(parsedDisplayDate) ? format(parsedDisplayDate, 'MMMM do, yyyy') : dateForBooking;
             responseText = `Okay, for ${displayDate}. What time would you like to come in?`;
             webUiConversationContext.gatheredTime = undefined;
             webUiConversationContext.gatheredReason = undefined;
@@ -193,18 +250,23 @@ export async function handleUserMessage(messageText: string, senderType: SenderT
             webUiConversationContext.gatheredTime = timeForBooking;
             const appointmentDateTime = parseDateTimeWeb(dateForBooking, timeForBooking);
 
-            if (!appointmentDateTime || !isFuture(appointmentDateTime)) {
-                responseText = `The appointment time ${dateForBooking} at ${timeForBooking} is either invalid or in the past. Please provide a valid future date and time.`;
-                webUiConversationContext.gatheredDate = dateForBooking; // Keep date, clear time
+            if (!appointmentDateTime || !isValid(appointmentDateTime)) {
+                responseText = `I couldn't quite understand the time "${timeForBooking}" for ${displayDate}. Please provide a valid time (e.g., 2pm, 14:00).`;
                 webUiConversationContext.gatheredTime = undefined;
-                webUiConversationContext.gatheredReason = undefined; // Clear reason as time was invalid
+                break;
+            }
+            if (!isFuture(appointmentDateTime)) {
+                responseText = `The appointment time ${format(appointmentDateTime, 'MMMM do, yyyy \'at\' h:mm a')} is in the past. Please provide a valid future date and time.`;
+                webUiConversationContext.gatheredDate = dateForBooking;
+                webUiConversationContext.gatheredTime = undefined;
+                webUiConversationContext.gatheredReason = undefined;
                 break;
             }
 
             const requestedHour = getHours(appointmentDateTime);
             if (requestedHour < DOCTOR_WORK_START_HOUR || requestedHour >= DOCTOR_WORK_END_HOUR) {
-                 responseText = `I'm sorry, the clinic is open from ${format(setHours(new Date(), DOCTOR_WORK_START_HOUR), 'h a')} to ${format(setHours(new Date(), DOCTOR_WORK_END_HOUR), 'h a')}. The time you requested (${format(appointmentDateTime, 'h:mm a')}) is outside these hours. Would you like to choose a different time on ${format(appointmentDateTime, 'MMMM do')} or another day?`;
-                 webUiConversationContext.gatheredTime = undefined; // Ask for time again
+                 responseText = `I'm sorry, the clinic is open from ${format(setHours(new Date(), DOCTOR_WORK_START_HOUR), 'h a')} to ${format(setHours(new Date(), DOCTOR_WORK_END_HOUR), 'h a')}. The time you requested (${format(appointmentDateTime, 'h:mm a')}) is outside these hours. Would you like to choose a different time on ${displayDate} or another day?`;
+                 webUiConversationContext.gatheredTime = undefined;
                  break;
             }
 
@@ -220,7 +282,7 @@ export async function handleUserMessage(messageText: string, senderType: SenderT
           }
         }
         break;
-
+      }
       case 'reschedule_appointment': {
         webUiConversationContext.lastIntent = 'reschedule_appointment';
         const patientNameToReschedule = senderType === 'doctor' ? entities?.patient_name : undefined;
@@ -265,13 +327,23 @@ export async function handleUserMessage(messageText: string, senderType: SenderT
                 responseText += ` What new date and time would you like for the appointment?`;
             } else if (newRescheduleDate && !newRescheduleTime) {
                 const parsedNewRescheduleDate = parse(newRescheduleDate, 'yyyy-MM-dd', new Date());
-                responseText += ` You've chosen ${isValid(parsedNewRescheduleDate) ? format(parsedNewRescheduleDate, 'MMMM do, yyyy') : newRescheduleDate} as the new date. What time would you like?`;
+                if (!isValid(parsedNewRescheduleDate)) {
+                    responseText = `The new date "${newRescheduleDate}" seems invalid. Could you please provide a valid date?`;
+                    webUiConversationContext.gatheredRescheduleNewDate = undefined;
+                    break;
+                }
+                responseText += ` You've chosen ${format(parsedNewRescheduleDate, 'MMMM do, yyyy')} as the new date. What time would you like?`;
                 webUiConversationContext.gatheredRescheduleNewDate = newRescheduleDate;
                 webUiConversationContext.currentContextualDate = newRescheduleDate; // Update context to new date for follow-up
-            } else if (!newRescheduleDate && newRescheduleTime) {
-                 newRescheduleDate = originalApptDateForDisplay;
+            } else if (!newRescheduleDate && newRescheduleTime) { // Time provided, but no new date (implies same day as original or current contextualDate)
+                 newRescheduleDate = webUiConversationContext.currentContextualDate || originalApptDateForDisplay; // Use current context if available, else original
                  const finalDateTime = parseDateTimeWeb(newRescheduleDate, newRescheduleTime);
-                 if (!finalDateTime || !isFuture(finalDateTime)) {
+                 if (!finalDateTime || !isValid(finalDateTime)) {
+                     responseText = `I couldn't understand the new time "${newRescheduleTime}" for ${format(parse(newRescheduleDate, 'yyyy-MM-dd', new Date()), 'MMMM do')}. Please try again.`;
+                     webUiConversationContext.gatheredRescheduleNewTime = undefined;
+                     break;
+                 }
+                 if (!isFuture(finalDateTime)) {
                     const parsedOriginalDate = parse(newRescheduleDate, 'yyyy-MM-dd', new Date());
                     responseText = `The new time ${newRescheduleTime} on ${isValid(parsedOriginalDate) ? format(parsedOriginalDate, 'MMMM do, yyyy') : newRescheduleDate} is either invalid or in the past. Please provide a valid future time.`;
                     webUiConversationContext.gatheredRescheduleNewTime = undefined;
@@ -286,11 +358,17 @@ export async function handleUserMessage(messageText: string, senderType: SenderT
                         webUiConversationContext = {};
                     }
                  }
-            } else {
+            } else { // Both newRescheduleDate and newRescheduleTime are available
                 const finalDateTime = parseDateTimeWeb(newRescheduleDate!, newRescheduleTime!);
-                 if (!finalDateTime || !isFuture(finalDateTime)) {
-                    responseText = `The new appointment time ${newRescheduleDate} at ${newRescheduleTime} is either invalid or in the past. Please provide a valid future date and time.`;
-                    webUiConversationContext.gatheredRescheduleNewDate = newRescheduleDate; // Keep new date if provided
+                 if (!finalDateTime || !isValid(finalDateTime)) {
+                    responseText = `I couldn't understand the new date "${newRescheduleDate}" or time "${newRescheduleTime}". Please provide them clearly.`;
+                    webUiConversationContext.gatheredRescheduleNewDate = undefined;
+                    webUiConversationContext.gatheredRescheduleNewTime = undefined;
+                    break;
+                 }
+                 if (!isFuture(finalDateTime)) {
+                    responseText = `The new appointment time ${format(finalDateTime, 'MMMM do, yyyy \'at\' h:mm a')} is in the past. Please provide a valid future date and time.`;
+                    webUiConversationContext.gatheredRescheduleNewDate = newRescheduleDate;
                     webUiConversationContext.gatheredRescheduleNewTime = undefined;
                  } else {
                     const requestedHour = getHours(finalDateTime);
@@ -337,10 +415,10 @@ export async function handleUserMessage(messageText: string, senderType: SenderT
             if (startDateEntity) {
                 try {
                     pauseStartDateWeb = parse(startDateEntity, 'yyyy-MM-dd', new Date());
-                    if (!isValid(pauseStartDateWeb)) pauseStartDateWeb = new Date(); // Default to today if parsing fails
+                    if (!isValid(pauseStartDateWeb)) pauseStartDateWeb = new Date(); 
                 } catch { pauseStartDateWeb = new Date(); }
             } else {
-                pauseStartDateWeb = new Date(); // Pause from today by default if no start_date
+                pauseStartDateWeb = new Date(); 
             }
 
             if (endDateEntity) {
@@ -349,12 +427,12 @@ export async function handleUserMessage(messageText: string, senderType: SenderT
                     if (!isValid(pauseEndDateWeb)) pauseEndDateWeb = null;
                 } catch { pauseEndDateWeb = null; }
             } else {
-                pauseEndDateWeb = null; // No end date means indefinite (or just for start_date if no end_date given)
+                pauseEndDateWeb = null; 
             }
             
             if (pauseStartDateWeb && pauseEndDateWeb && pauseStartDateWeb > pauseEndDateWeb) {
                  responseText = "Doctor, the start date for pausing bookings cannot be after the end date. Please try again.";
-                 isBookingPausedWeb = false; // Revert pause
+                 isBookingPausedWeb = false; 
                  pauseStartDateWeb = null;
                  pauseEndDateWeb = null;
             } else {
@@ -365,7 +443,7 @@ export async function handleUserMessage(messageText: string, senderType: SenderT
                 else responseText += ` indefinitely.`;
             }
         }
-        webUiConversationContext = {}; // Clear context after this command
+        webUiConversationContext = {}; 
         break;
 
       case 'resume_bookings':
@@ -391,20 +469,19 @@ export async function handleUserMessage(messageText: string, senderType: SenderT
 
       case 'greeting':
         responseText = "Hello! I'm MediMate AI. How can I help you with your appointments today?";
-        // Don't clear context on greeting if a booking was in progress
-        if (webUiConversationContext.lastIntent !== 'book_appointment' && webUiConversationContext.lastIntent !== 'reschedule_appointment') {
+        if (!['book_appointment', 'reschedule_appointment', 'query_availability', 'query_availability_slots_offered', 'query_availability_date_requested'].includes(webUiConversationContext.lastIntent || '')) {
             webUiConversationContext = {};
         }
         break;
       case 'thank_you':
         responseText = "You're very welcome! Is there anything else I can assist you with?";
-        if (webUiConversationContext.lastIntent !== 'book_appointment' && webUiConversationContext.lastIntent !== 'reschedule_appointment') {
+        if (!['book_appointment', 'reschedule_appointment', 'query_availability', 'query_availability_slots_offered', 'query_availability_date_requested'].includes(webUiConversationContext.lastIntent || '')) {
             webUiConversationContext = {};
         }
         break;
       case 'faq_opening_hours':
         responseText = `The clinic is open from ${format(setHours(new Date(), DOCTOR_WORK_START_HOUR), 'h a')} to ${format(setHours(new Date(), DOCTOR_WORK_END_HOUR), 'h a')}, Monday to Friday. We are closed on weekends and public holidays.`;
-        if (webUiConversationContext.lastIntent !== 'book_appointment' && webUiConversationContext.lastIntent !== 'reschedule_appointment') {
+        if (!['book_appointment', 'reschedule_appointment', 'query_availability', 'query_availability_slots_offered', 'query_availability_date_requested'].includes(webUiConversationContext.lastIntent || '')) {
             webUiConversationContext = {};
         }
         break;
@@ -412,8 +489,8 @@ export async function handleUserMessage(messageText: string, senderType: SenderT
       default: {
         const conversationalPrompt = `You are MediMate AI, a friendly and helpful WhatsApp assistant for Dr. [Doctor's Name]'s clinic, currently being tested in a web UI.
 The user (a ${senderType}) sent: "${messageText}".
-Your primary functions are to help with booking, rescheduling, or cancelling appointments. You can also answer simple questions about the clinic like opening hours (${format(setHours(new Date(), DOCTOR_WORK_START_HOUR), 'h a')} to ${format(setHours(new Date(), DOCTOR_WORK_END_HOUR), 'h a')}, Mon-Fri).
-If the user's message seems related to these functions but is incomplete, guide them or ask for clarification.
+Your primary functions are to help with booking, rescheduling, or cancelling appointments, or checking availability. You can also answer simple questions about the clinic like opening hours (${format(setHours(new Date(), DOCTOR_WORK_START_HOUR), 'h a')} to ${format(setHours(new Date(), DOCTOR_WORK_END_HOUR), 'h a')}, Mon-Fri).
+If the user's message seems related to these functions but is incomplete, guide them or ask for clarification. For example, if they ask for slots without a date, ask for the date. If they give a date and time for booking, ask for a reason.
 If the message is a general health query, provide a very brief, general, non-diagnostic piece of advice and strongly recommend booking an appointment for any medical concerns. Do NOT attempt to diagnose or give specific medical advice.
 If the message is a simple greeting or social interaction, respond politely and conversationally.
 If the message is completely unrelated or very unclear, politely state that you can primarily assist with appointments and clinic information in this test environment.
@@ -435,7 +512,8 @@ Keep your responses concise and helpful. Be friendly and empathetic. If you don'
             entities: { ...(intentResult?.entities || {}), fallbackError: genErrorMessage, detail: genError.detail }
           };
         }
-        if (!webUiConversationContext.lastIntent || (webUiConversationContext.lastIntent !== 'book_appointment' && webUiConversationContext.lastIntent !== 'reschedule_appointment')) {
+        // Only clear context if not in an active multi-turn flow.
+        if (!['book_appointment', 'reschedule_appointment', 'query_availability', 'query_availability_slots_offered', 'query_availability_date_requested'].includes(webUiConversationContext.lastIntent || '')) {
             webUiConversationContext = {};
         }
       }
@@ -447,7 +525,7 @@ Keep your responses concise and helpful. Be friendly and empathetic. If you don'
     const errorMessage = error.message || String(error);
     console.error(`[Web UI Action] CRITICAL ERROR in handleUserMessage. Message: "${messageText}". Error: ${errorMessage}`, error.stack);
     responseText = "Sorry, I encountered an error processing your message. Please try again.";
-    webUiConversationContext = {};
+    webUiConversationContext = {}; // Reset context on major error
     return {
       responseText,
       intent: intentResult?.intent || "error",
@@ -460,8 +538,6 @@ export async function getDailySummaryAction(): Promise<string> {
   console.log("[Web UI Action] Getting daily summary.");
   try {
     const today = format(new Date(), 'yyyy-MM-dd');
-    // In a real scenario, this would fetch from where actual bookings are stored.
-    // For the web UI, this still uses Google Sheets as a placeholder.
     const appointmentsFromSheet = await getAppointmentsFromSheet({ date: today, status: 'booked' });
 
     if (!appointmentsFromSheet || appointmentsFromSheet.length === 0) {
@@ -490,3 +566,4 @@ export async function getDailySummaryAction(): Promise<string> {
     return `Sorry, I couldn't fetch the daily summary due to an error: ${errorMessage}`;
   }
 }
+
