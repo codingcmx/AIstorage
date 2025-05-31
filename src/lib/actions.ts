@@ -5,7 +5,7 @@ import type { SenderType } from '@/types/chat';
 import { recognizeIntent, type RecognizeIntentOutput } from '@/ai/flows/intent-recognition';
 import { generateDailySummary, GenerateDailySummaryInput } from '@/ai/flows/daily-summary';
 import { getAppointmentsFromSheet } from '@/services/google-sheets-service';
-import { format, parse, isValid, parseISO, isFuture, setHours, setMinutes, setSeconds, setMilliseconds } from 'date-fns';
+import { format, parse, isValid, parseISO, isFuture, setHours, setMinutes, setSeconds, setMilliseconds, getHours } from 'date-fns';
 import { ai } from '@/ai/genkit';
 
 interface HandleUserMessageResult {
@@ -13,6 +13,10 @@ interface HandleUserMessageResult {
   intent?: string;
   entities?: Record<string, any>;
 }
+
+// Define Doctor's Working Hours (for Web UI simulation)
+const DOCTOR_WORK_START_HOUR = 9; // 9 AM
+const DOCTOR_WORK_END_HOUR = 17; // 5 PM
 
 // Helper to parse date and time from entities for Web UI
 function parseDateTimeWeb(dateStr?: string, timeStr?: string): Date | null {
@@ -22,11 +26,11 @@ function parseDateTimeWeb(dateStr?: string, timeStr?: string): Date | null {
   }
   console.log(`[Web UI Action] parseDateTimeWeb: Attempting to parse date: "${dateStr}", time: "${timeStr}"`);
 
-  // Try specific combined formats first
   const dateTimeFormats = [
     'yyyy-MM-dd HH:mm',
     'yyyy-MM-dd h:mm a',
-    'yyyy-MM-dd hh:mma', // common variation
+    'yyyy-MM-dd hh:mma', 
+    'yyyy-MM-dd ha',    
   ];
 
   for (const fmt of dateTimeFormats) {
@@ -39,11 +43,10 @@ function parseDateTimeWeb(dateStr?: string, timeStr?: string): Date | null {
     } catch { /* ignore and try next format */ }
   }
   
-  // Fallback: Parse date string, then apply time parts
   try {
-    let baseDate = parseISO(dateStr); // Try ISO first for dateStr
+    let baseDate = parseISO(dateStr); 
     if (!isValid(baseDate)) {
-      baseDate = parse(dateStr, 'yyyy-MM-dd', new Date()); // Then try 'yyyy-MM-dd'
+      baseDate = parse(dateStr, 'yyyy-MM-dd', new Date()); 
     }
 
     if (!isValid(baseDate)) {
@@ -58,7 +61,7 @@ function parseDateTimeWeb(dateStr?: string, timeStr?: string): Date | null {
       const period = timeMatch[3]?.toLowerCase();
 
       if (period === 'pm' && hour < 12) hour += 12;
-      if (period === 'am' && hour === 12) hour = 0; // Midnight case: 12 AM is 00 hours
+      if (period === 'am' && hour === 12) hour = 0; 
 
       if (hour >= 0 && hour <= 23 && minute >= 0 && minute <= 59) {
         let resultDate = setHours(baseDate, hour);
@@ -86,18 +89,12 @@ function parseDateTimeWeb(dateStr?: string, timeStr?: string): Date | null {
   return null;
 }
 
-// In-memory state for web UI simulation (does not persist or affect actual bookings)
-let isBookingPausedWeb = false;
-let pauseStartDateWeb: Date | null = null;
-let pauseEndDateWeb: Date | null = null;
-
-// Updated conversation context
 let webUiConversationContext: {
   lastIntent?: string;
-  gatheredDate?: string; // For booking
-  gatheredTime?: string; // For booking
-  currentContextualDate?: string; // Date of appointment being discussed (e.g. for reschedule - this is ORIGINAL appt date)
-  gatheredReason?: string; // For booking
+  gatheredDate?: string; 
+  gatheredTime?: string; 
+  currentContextualDate?: string; 
+  gatheredReason?: string; 
   gatheredRescheduleNewDate?: string;
   gatheredRescheduleNewTime?: string;
 } = {};
@@ -116,7 +113,6 @@ export async function handleUserMessage(messageText: string, senderType: SenderT
     let { intent, entities } = intentResult;
     console.log(`[Web UI Action] handleUserMessage: recognizeIntent result - Intent: ${intent}, Entities: ${JSON.stringify(entities)}`);
 
-    // Pre-switch context updates based on lastIntent and current AI output
     if (webUiConversationContext.lastIntent === 'book_appointment') {
       if (!webUiConversationContext.gatheredDate && entities?.date) {
         webUiConversationContext.gatheredDate = entities.date;
@@ -196,6 +192,15 @@ export async function handleUserMessage(messageText: string, senderType: SenderT
                 webUiConversationContext.gatheredReason = undefined;
                 break;
             }
+            
+            // Check working hours
+            const requestedHour = getHours(appointmentDateTime);
+            if (requestedHour < DOCTOR_WORK_START_HOUR || requestedHour >= DOCTOR_WORK_END_HOUR) {
+                 responseText = `I'm sorry, the clinic is open from ${format(setHours(new Date(), DOCTOR_WORK_START_HOUR), 'h a')} to ${format(setHours(new Date(), DOCTOR_WORK_END_HOUR), 'h a')}. The time you requested (${format(appointmentDateTime, 'h:mm a')}) is outside these hours. Would you like to choose a different time or another day?`;
+                 webUiConversationContext.gatheredTime = undefined; // Ask for time again or new date
+                 break;
+            }
+
 
             if (!reasonForBooking) {
               responseText = `Got it, ${format(appointmentDateTime, 'MMMM do, yyyy \'at\' h:mm a')}. And what is the reason for your visit?`;
@@ -262,9 +267,15 @@ export async function handleUserMessage(messageText: string, senderType: SenderT
                     responseText = `The new time ${newRescheduleTime} on ${isValid(parsedOriginalDate) ? format(parsedOriginalDate, 'MMMM do, yyyy') : newRescheduleDate} is either invalid or in the past. Please provide a valid future time.`;
                     webUiConversationContext.gatheredRescheduleNewTime = undefined; 
                  } else {
-                    responseText = `Okay, appointment rescheduled to ${format(finalDateTime, 'MMMM do, yyyy \'at\' h:mm a')}. (This is a web UI test.)`;
-                    if (patientNameToReschedule) responseText += ` For ${patientNameToReschedule}.`;
-                    webUiConversationContext = {}; 
+                    const requestedHour = getHours(finalDateTime);
+                    if (requestedHour < DOCTOR_WORK_START_HOUR || requestedHour >= DOCTOR_WORK_END_HOUR) {
+                         responseText = `I'm sorry, the clinic is open from ${format(setHours(new Date(), DOCTOR_WORK_START_HOUR), 'h a')} to ${format(setHours(new Date(), DOCTOR_WORK_END_HOUR), 'h a')}. The new time you requested (${format(finalDateTime, 'h:mm a')}) is outside these hours. Please choose a different time.`;
+                         webUiConversationContext.gatheredRescheduleNewTime = undefined; 
+                    } else {
+                        responseText = `Okay, appointment rescheduled to ${format(finalDateTime, 'MMMM do, yyyy \'at\' h:mm a')}. (This is a web UI test.)`;
+                        if (patientNameToReschedule) responseText += ` For ${patientNameToReschedule}.`;
+                        webUiConversationContext = {}; 
+                    }
                  }
             } else { 
                 const finalDateTime = parseDateTimeWeb(newRescheduleDate!, newRescheduleTime!);
@@ -273,9 +284,16 @@ export async function handleUserMessage(messageText: string, senderType: SenderT
                     webUiConversationContext.gatheredRescheduleNewDate = undefined; 
                     webUiConversationContext.gatheredRescheduleNewTime = undefined;
                  } else {
-                    responseText = `Okay, appointment rescheduled to ${format(finalDateTime, 'MMMM do, yyyy \'at\' h:mm a')}. (This is a web UI test.)`;
-                    if (patientNameToReschedule) responseText += ` For ${patientNameToReschedule}.`;
-                    webUiConversationContext = {}; 
+                    const requestedHour = getHours(finalDateTime);
+                     if (requestedHour < DOCTOR_WORK_START_HOUR || requestedHour >= DOCTOR_WORK_END_HOUR) {
+                         responseText = `I'm sorry, the clinic is open from ${format(setHours(new Date(), DOCTOR_WORK_START_HOUR), 'h a')} to ${format(setHours(new Date(), DOCTOR_WORK_END_HOUR), 'h a')}. The new time you requested (${format(finalDateTime, 'h:mm a')}) is outside these hours. Please choose a different time or another day.`;
+                         webUiConversationContext.gatheredRescheduleNewDate = undefined;
+                         webUiConversationContext.gatheredRescheduleNewTime = undefined;
+                     } else {
+                        responseText = `Okay, appointment rescheduled to ${format(finalDateTime, 'MMMM do, yyyy \'at\' h:mm a')}. (This is a web UI test.)`;
+                        if (patientNameToReschedule) responseText += ` For ${patientNameToReschedule}.`;
+                        webUiConversationContext = {}; 
+                     }
                  }
             }
         }
@@ -343,14 +361,14 @@ export async function handleUserMessage(messageText: string, senderType: SenderT
         webUiConversationContext = {}; 
         break;
       case 'faq_opening_hours':
-        responseText = "The clinic is open from 9 AM to 5 PM, Monday to Friday. We are closed on weekends and public holidays.";
+        responseText = `The clinic is open from ${format(setHours(new Date(), DOCTOR_WORK_START_HOUR), 'h a')} to ${format(setHours(new Date(), DOCTOR_WORK_END_HOUR), 'h a')}, Monday to Friday. We are closed on weekends and public holidays.`;
         webUiConversationContext = {}; 
         break;
       case 'other':
       default: {
         const conversationalPrompt = `You are MediMate AI, a friendly and helpful WhatsApp assistant for Dr. [Doctor's Name]'s clinic, currently being tested in a web UI.
 The user (a ${senderType}) sent: "${messageText}".
-Your primary functions are to help with booking, rescheduling, or cancelling appointments. You can also answer simple questions about the clinic like opening hours.
+Your primary functions are to help with booking, rescheduling, or cancelling appointments. You can also answer simple questions about the clinic like opening hours (9 AM to 5 PM, Mon-Fri).
 If the user's message seems related to these functions but is incomplete, guide them or ask for clarification.
 If the message is a general health query, provide a very brief, general, non-diagnostic piece of advice and strongly recommend booking an appointment for any medical concerns. Do NOT attempt to diagnose or give specific medical advice.
 If the message is a simple greeting or social interaction, respond politely and conversationally.
@@ -426,3 +444,5 @@ export async function getDailySummaryAction(): Promise<string> {
     return `Sorry, I couldn't fetch the daily summary due to an error: ${errorMessage}`;
   }
 }
+
+    
