@@ -1,4 +1,3 @@
-
 'use server';
 
 /**
@@ -9,7 +8,8 @@
  * - RecognizeIntentOutput - The return type for the recognizeIntent function (imported from schemas).
  */
 
-import {ai}from '@/ai/genkit';
+import {ai} from '@/ai/genkit';
+import {z} from 'genkit'; // Added missing Zod import
 // Import schemas and types from the new schemas.ts file
 import {
   RecognizeIntentInputSchema,
@@ -24,7 +24,10 @@ export type { RecognizeIntentInput, RecognizeIntentOutput };
 export async function recognizeIntent(input: RecognizeIntentInput): Promise<RecognizeIntentOutput> {
   console.log('[Intent Recognition Flow] Attempting to recognize intent for:', JSON.stringify(input));
   try {
-    const result = await recognizeIntentFlow(input);
+    const result = await recognizeIntentFlow({
+      ...input,
+      currentDate: new Date().toISOString().split('T')[0], // Pass current date for relative date resolution
+    });
     // Ensure entities is always an object, even if undefined from the flow
     const entities = result.entities || {};
     const output = { ...result, entities, originalMessage: input.message };
@@ -33,100 +36,147 @@ export async function recognizeIntent(input: RecognizeIntentInput): Promise<Reco
   } catch (error: any) {
     console.error('[Intent Recognition Flow] CRITICAL ERROR in recognizeIntent function:', error.message || String(error), error.stack);
     console.error('[Intent Recognition Flow] Full error object:', JSON.stringify(error, Object.getOwnPropertyNames(error)));
-    // Re-throw the error or return a structured error object, depending on desired handling
-    // For now, re-throwing to be caught by the caller (e.g., handleUserMessage or processWhatsAppMessageFlow)
     throw error;
   }
 }
 
+// Add currentDate to the input schema for the prompt
+const recognizeIntentPromptInputSchema = RecognizeIntentInputSchema.extend({
+  currentDate: z.string().describe("The current date in YYYY-MM-DD format, for resolving relative dates.")
+});
+
+
 const prompt = ai.definePrompt({
   name: 'recognizeIntentPrompt',
-  input: {schema: RecognizeIntentInputSchema},
-  output: {schema: RecognizeIntentPromptOutputSchema}, // Use the schema for the AI's direct output
-  prompt: `You are a WhatsApp bot for a doctor's clinic. Your task is to identify the intent and extract entities from messages.
-Message is from a {{senderType}}.
+  input: {schema: recognizeIntentPromptInputSchema},
+  output: {schema: RecognizeIntentPromptOutputSchema},
+  prompt: `You are an AI assistant for a doctor's clinic. Your primary task is to understand messages related to appointment management and extract relevant information.
+Today's date is {{currentDate}}. Use this to resolve relative dates like "tomorrow", "next Monday".
+The message is from a {{senderType}}.
 
-Current Date for reference (if needed for relative dates like "tomorrow"): ${new Date().toISOString().split('T')[0]}
+Your goal is to extract:
+1. Intent: 'book_appointment', 'reschedule_appointment', 'cancel_appointment', 'pause_bookings', 'resume_bookings', 'cancel_all_meetings_today', 'greeting', 'thank_you', 'faq_opening_hours', or 'other'.
+2. Date: In YYYY-MM-DD format.
+3. Time: In HH:mm (24-hour) format. If AM/PM is used, convert it. If "afternoon" is mentioned without a specific time, you can assume 14:00. If "morning", assume 10:00. If "evening", assume 18:00.
+4. Reason: For 'book_appointment' intent, extract the reason for the visit if provided.
+5. Patient Name: For doctor commands like '/cancel [patient_name]' or '/reschedule [patient_name]', extract the patient_name.
+6. Start Date: For '/pause bookings from [start_date]', extract start_date.
+7. End Date: For '/pause bookings from [start_date] to [end_date]', extract end_date.
 
-Common Patient Intents:
-- book_appointment: User wants to schedule a new appointment.
-  Entities: { date: "YYYY-MM-DD", time: "HH:MM" (24hr) or "h:mm a", reason: "Visit reason" }
-  Examples:
-    "I'd like to book an appointment for a tooth cleaning next Monday at 2pm." -> { intent: "book_appointment", entities: { date: "YYYY-MM-DD (next Monday)", time: "14:00", reason: "tooth cleaning" } }
-    "Need to see the doctor for a checkup on July 25th around 10 AM." -> { intent: "book_appointment", entities: { date: "2024-07-25", time: "10:00", reason: "checkup" } }
-- reschedule_appointment: User wants to change an existing appointment.
-  Entities: { date: "YYYY-MM-DD", time: "HH:MM" or "h:mm a" } (for the new time)
-  Examples:
-    "Can I reschedule my appointment to tomorrow at 3pm?" -> { intent: "reschedule_appointment", entities: { date: "YYYY-MM-DD (tomorrow)", time: "15:00" } }
-- cancel_appointment: User wants to cancel an appointment.
-  Entities: {}
-  Examples:
-    "I need to cancel my appointment." -> { intent: "cancel_appointment", entities: {} }
-- greeting: User sends a greeting.
-  Entities: {}
-  Examples: "Hello", "Hi" -> { intent: "greeting", entities: {} }
-- thank_you: User expresses thanks.
-  Entities: {}
-  Examples: "Thanks", "Thank you" -> { intent: "thank_you", entities: {} }
-- faq_opening_hours: User asks about clinic hours.
-  Entities: {}
-  Examples: "What are your hours?" -> { intent: "faq_opening_hours", entities: {} }
+Output should be a JSON object.
 
-Common Doctor Commands (senderType will be 'doctor'):
-- /pause bookings from [start_date] to [end_date]: Doctor wants to pause new bookings.
-  Entities: { start_date: "YYYY-MM-DD", end_date: "YYYY-MM-DD" } (end_date is optional)
-  Examples:
-    "/pause bookings from 2024-08-01 to 2024-08-05" -> { intent: "pause_bookings", entities: { start_date: "2024-08-01", end_date: "2024-08-05" } }
-    "/pause bookings from tomorrow" -> { intent: "pause_bookings", entities: { start_date: "YYYY-MM-DD (tomorrow)" } }
-- /resume bookings: Doctor wants to resume bookings.
-  Entities: {}
-  Examples:
-    "/resume bookings" -> { intent: "resume_bookings", entities: {} }
-- /cancel all meetings today: Doctor wants to cancel all appointments for the current day.
-  Entities: {}
-  Examples:
-    "/cancel all meetings today" -> { intent: "cancel_all_meetings_today", entities: {} }
-- /cancel [patient_name] appointment: Doctor wants to cancel a specific patient's appointment.
-  Entities: { patient_name: "Patient's Full Name" } (If date is mentioned, extract {date: "YYYY-MM-DD"})
-  Examples:
-    "/cancel John Doe appointment" -> { intent: "cancel_appointment", entities: { patient_name: "John Doe" } }
-    "/cancel Anika Sharma's appointment for today" -> { intent: "cancel_appointment", entities: { patient_name: "Anika Sharma", date: "YYYY-MM-DD (today)"}}
-- /reschedule [patient_name] to [new_date] at [new_time]: Doctor wants to reschedule a specific patient's appointment.
-  Entities: { patient_name: "Patient's Full Name", date: "YYYY-MM-DD", time: "HH:MM" or "h:mm a" }
-  Examples:
-    "/reschedule Jane Smith to 2024-08-10 at 3pm" -> { intent: "reschedule_appointment", entities: { patient_name: "Jane Smith", date: "2024-08-10", time: "15:00" } }
+Examples:
 
-If no specific intent is recognized, use "other".
-Prioritize doctor commands if the message starts with '/'.
-Parse dates and times. If year is omitted for a date, assume current year or next year if the date has passed.
-Convert times to HH:MM (24-hour) format if possible, but retain original if ambiguous or if only "morning/afternoon" is given.
-If the message implies a relative date (e.g., "next Monday", "tomorrow"), the date entity should reflect the calculated YYYY-MM-DD.
+Patient Intents & Entity Extraction:
+- Message: "I want an appointment next Monday at 2pm"
+  (Assuming {{currentDate}} makes "next Monday" resolve to a specific YYYY-MM-DD)
+  Output: { "intent": "book_appointment", "entities": { "date": "YYYY-MM-DD (for next Monday)", "time": "14:00" } }
 
-Message: {{{message}}}
+- Message: "Can I come tomorrow afternoon?"
+  Output: { "intent": "book_appointment", "entities": { "date": "YYYY-MM-DD (for tomorrow)", "time": "14:00" } }
+
+- Message: "Book me for 2nd June at 11"
+  Output: { "intent": "book_appointment", "entities": { "date": "YYYY-MM-DD (for 2nd June, ensure year based on {{currentDate}})", "time": "11:00" } }
+
+- Message: "I'd like to book an appointment for a tooth cleaning next Monday at 2pm."
+  Output: { "intent": "book_appointment", "entities": { "date": "YYYY-MM-DD (next Monday from {{currentDate}})", "time": "14:00", "reason": "tooth cleaning" } }
+
+- Message: "Need to see the doctor for a checkup on July 25th around 10 AM."
+  Output: { "intent": "book_appointment", "entities": { "date": "YYYY-MM-DD (July 25th)", "time": "10:00", "reason": "checkup" } }
+
+- Message: "Reschedule my appointment to next Friday"
+  Output: { "intent": "reschedule_appointment", "entities": { "date": "YYYY-MM-DD (next Friday from {{currentDate}})" } }
+
+- Message: "Can I reschedule my appointment to tomorrow at 3pm?"
+  Output: { "intent": "reschedule_appointment", "entities": { "date": "YYYY-MM-DD (tomorrow from {{currentDate}})", "time": "15:00" } }
+
+- Message: "Cancel my appointment on 3rd June"
+  Output: { "intent": "cancel_appointment", "entities": { "date": "YYYY-MM-DD (for 3rd June)" } }
+
+- Message: "I need to cancel my appointment."
+  Output: { "intent": "cancel_appointment", "entities": {} }
+
+Conversational Follow-ups (After the bot has asked a question):
+- Bot asked: "What day were you thinking of?"
+  User message: "Tomorrow"
+  Output: { "intent": "book_appointment", "entities": { "date": "YYYY-MM-DD (tomorrow from {{currentDate}})" } }
+
+- Bot asked: "What day were you thinking of?"
+  User message: "June 2nd"
+  Output: { "intent": "book_appointment", "entities": { "date": "YYYY-MM-DD (June 2nd, infer year from {{currentDate}})" } }
+
+- Bot asked: "Okay, for [date]. What time would you like to come in?"
+  User message: "2pm"
+  Output: { "intent": "book_appointment", "entities": { "time": "14:00" } }
+
+- Bot asked: "Okay, for [date]. What time would you like to come in?"
+  User message: "Around 10:30 in the morning"
+  Output: { "intent": "book_appointment", "entities": { "time": "10:30" } }
+
+- Bot asked: "And what is the reason for your visit?"
+  User message: "A checkup"
+  Output: { "intent": "book_appointment", "entities": { "reason": "A checkup" } }
+
+Other Common Patient Intents:
+- Message: "Hello", "Hi" -> { "intent": "greeting", "entities": {} }
+- Message: "Thanks", "Thank you" -> { "intent": "thank_you", "entities": {} }
+- Message: "What are your hours?" -> { "intent": "faq_opening_hours", "entities": {} }
+
+Doctor Commands (senderType will be 'doctor', typically messages starting with '/'):
+- Message: "/pause bookings from 2024-08-01 to 2024-08-05"
+  Output: { "intent": "pause_bookings", "entities": { "start_date": "2024-08-01", "end_date": "2024-08-05" } }
+
+- Message: "/pause bookings from tomorrow"
+  Output: { "intent": "pause_bookings", "entities": { "start_date": "YYYY-MM-DD (tomorrow from {{currentDate}})" } }
+
+- Message: "/resume bookings"
+  Output: { "intent": "resume_bookings", "entities": {} }
+
+- Message: "/cancel all meetings today"
+  Output: { "intent": "cancel_all_meetings_today", "entities": {} }
+
+- Message: "/cancel John Doe appointment"
+  Output: { "intent": "cancel_appointment", "entities": { "patient_name": "John Doe" } }
+
+- Message: "/cancel Anika Sharma appointment for tomorrow"
+  Output: { "intent": "cancel_appointment", "entities": { "patient_name": "Anika Sharma", "date": "YYYY-MM-DD (tomorrow from {{currentDate}})" } }
+
+- Message: "/reschedule Jane Smith to next Monday at 3pm"
+  Output: { "intent": "reschedule_appointment", "entities": { "patient_name": "Jane Smith", "date": "YYYY-MM-DD (next Monday from {{currentDate}})", "time": "15:00" } }
+
+General Instructions:
+- If no specific intent from the list above is recognized, use "other".
+- Prioritize doctor commands if the message starts with '/'.
+- Parse dates relative to {{currentDate}}. If year is omitted for a date, assume current year or next year if the date has passed in the current year.
+- Convert times to HH:mm (24-hour) format.
+- Extract the reason for the visit if provided with a booking request.
+
+User Message: {{{message}}}
 
 Output JSON:
 `,
 });
 
+
 const recognizeIntentFlow = ai.defineFlow(
   {
     name: 'recognizeIntentFlow',
-    inputSchema: RecognizeIntentInputSchema,
+    inputSchema: recognizeIntentPromptInputSchema, // Use the extended schema
     outputSchema: RecognizeIntentPromptOutputSchema, // The flow itself outputs based on the prompt's schema
   },
-  async (input: RecognizeIntentInput) => {
-    console.log('[Intent Recognition Flow] Internal flow input:', JSON.stringify(input));
-    const {output} = await prompt(input);
+  async (input) => { // Input type will match recognizeIntentPromptInputSchema
+    console.log('[Intent Recognition Flow] Internal flow input (with currentDate):', JSON.stringify(input));
+    const {output} = await prompt(input); // Pass the whole input including currentDate
     if (!output) {
         console.error('[Intent Recognition Flow] Failed to produce output from AI model for message:', input.message);
-        // Return a default structure for 'other' intent if AI fails
+        // It's crucial to return *something* that matches RecognizeIntentPromptOutputSchema
         return {
-            intent: 'other',
-            entities: { error: 'Failed to recognize intent from AI model.'}
+            intent: 'other', // Default to 'other'
+            entities: { error: 'Failed to recognize intent from AI model.'} // Provide an empty entities object or an error entity
         }
     }
     console.log('[Intent Recognition Flow] Internal flow output from AI:', JSON.stringify(output));
-    // Ensure entities is always an object, even if the AI returns undefined or null for it.
+    // Ensure entities is always an object, even if AI returns null/undefined for it
     const entities = output.entities || {};
     return { ...output, entities };
   }
