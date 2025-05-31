@@ -53,13 +53,16 @@ const prompt = ai.definePrompt({
   prompt: `You are an AI assistant for a doctor's clinic. Your primary task is to understand messages related to appointment management (book, reschedule, cancel) and extract relevant information.
 You should understand messages in English and Hinglish (a mix of Hindi and English).
 Today's date is {{currentDate}}.
-{{#if contextualDate}}The current appointment being discussed (e.g., for rescheduling) is on {{contextualDate}}. If the user says "same day" or "that day" when providing a new time or detail, assume they are referring to this {{contextualDate}}.{{/if}}
-Use {{currentDate}} to resolve other relative dates like "tomorrow", "next Monday", "kal", "parso".
-The message is from a {{senderType}}.
+
+{{#if contextualDate}}
+IMPORTANT: We are currently discussing an appointment on {{contextualDate}}.
+If the user provides new date/time details (e.g., "next Monday", "at 3pm", "same day at 4pm"), the intent is almost certainly 'reschedule_appointment'.
+The 'date' entity in your output for such a reschedule should be the *new* date. If they say "same day" or "that day", the 'date' entity should be {{contextualDate}}.
+{{/if}}
 
 Your goal is to extract:
 1. Intent: 'book_appointment', 'reschedule_appointment', 'cancel_appointment', 'pause_bookings', 'resume_bookings', 'cancel_all_meetings_today', 'greeting', 'thank_you', 'faq_opening_hours', or 'other'.
-2. Date: In YYYY-MM-DD format. For rescheduling, this is the NEW desired date. If "same day" is used in context of {{contextualDate}}, then the date is {{contextualDate}}.
+2. Date: In YYYY-MM-DD format. For 'book_appointment', this is the desired date. For 'reschedule_appointment', this is the NEW desired date. If "same day" is used in context of an existing appointment on {{contextualDate}}, then the date is {{contextualDate}}.
 3. Time: In HH:mm (24-hour) format. If AM/PM is used, convert it. If "afternoon" is mentioned without a specific time, assume 14:00. If "morning", assume 10:00. If "evening", assume 18:00. "Subah" can mean morning, "dopahar" afternoon, "shaam" evening. For rescheduling, this is the NEW desired time.
 4. Reason: For 'book_appointment' intent, extract the reason for the visit if provided.
 5. Patient Name: For doctor commands like '/cancel [patient_name]' or '/reschedule [patient_name]', extract the patient_name.
@@ -93,10 +96,12 @@ Patient Intents & Entity Extraction (English & Hinglish):
   Output: { "intent": "book_appointment", "entities": { "date": "YYYY-MM-DD (next Monday from {{currentDate}})", "time": "14:00", "reason": "tooth cleaning" } }
 
 - Message: "Reschedule my appointment to next Friday"
+  (No {{contextualDate}} provided by system yet, so this is a general reschedule request. Bot will need to ask WHICH appointment.)
   Output: { "intent": "reschedule_appointment", "entities": { "date": "YYYY-MM-DD (next Friday from {{currentDate}})" } }
   
-- Message: "Reschedule my appointment on {{contextualDate}} to same day at 3pm" (assuming {{contextualDate}} is set and bot asked for new time)
-  Output: { "intent": "reschedule_appointment", "entities": { "date": "{{contextualDate}}", "time": "15:00" } }
+- Message: "Reschedule my appointment on 2025-07-10 to next Friday at 2pm"
+  (Here, user specifies the original appointment and new details. {{contextualDate}} might be 2025-07-10 or not set yet by system. AI extracts new date/time.)
+  Output: { "intent": "reschedule_appointment", "entities": { "date": "YYYY-MM-DD (next Friday from {{currentDate}})", "time": "14:00" } }
 
 - Message: "Mera appointment agle Friday ko reschedule kar do." (Reschedule my appointment to next Friday.)
   Output: { "intent": "reschedule_appointment", "entities": { "date": "YYYY-MM-DD (next Friday from {{currentDate}})" } }
@@ -138,7 +143,13 @@ Conversational Follow-ups (After the bot has asked a question):
 
 - Bot asked: "Your appointment is on {{contextualDate}}. What new date and time would you like?"
   User message: "Same day at 4pm"
+  (Here, {{contextualDate}} was "YYYY-MM-DD of the original appointment")
   Output: { "intent": "reschedule_appointment", "entities": { "date": "{{contextualDate}}", "time": "16:00" } }
+
+- Bot asked: "Your appointment is on {{contextualDate}}. What new date and time would you like?"
+  User message: "On same day at 9am"
+  (Here, {{contextualDate}} was "YYYY-MM-DD of the original appointment")
+  Output: { "intent": "reschedule_appointment", "entities": { "date": "{{contextualDate}}", "time": "09:00" } }
 
 - Bot asked: "Your appointment is on {{contextualDate}}. What new date and time would you like?"
   User message: "Next Monday at 10am"
@@ -175,7 +186,8 @@ Doctor Commands (senderType will be 'doctor', typically messages starting with '
 General Instructions:
 - If no specific intent from the list above is recognized, use "other".
 - Prioritize doctor commands if the message starts with '/'.
-- Parse dates relative to {{currentDate}} unless {{contextualDate}} is highly relevant (e.g. "same day").
+- Parse dates relative to {{currentDate}} unless contextualDate is highly relevant (e.g. "same day" or user explicitly refers to a date for an existing appointment).
+- If contextualDate is present and the user's message contains new date/time information, the intent is very likely 'reschedule_appointment'. Ensure the output 'date' entity is the *new* date, or {{contextualDate}} if "same day" is used.
 - If year is omitted for a date, assume current year or next year if the date has passed in the current year.
 - Convert times to HH:mm (24-hour) format.
 - Extract the reason for the visit if provided with a booking request.
@@ -208,3 +220,4 @@ const recognizeIntentFlow = ai.defineFlow(
     return { ...output, entities };
   }
 );
+
