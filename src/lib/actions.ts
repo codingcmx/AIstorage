@@ -33,10 +33,33 @@ function parseDateTimeWeb(dateStr?: string, timeStr?: string): Date | null {
   
   // Fallback for ISO-like date and simple time
   try {
-    const combined = `${dateStr}T${timeStr}`;
+    const combined = `${dateStr}T${timeStr}`; // Standard ISO format for date and time
     const d = parseISO(combined);
     if (isValid(d)) return d;
   } catch { /* ignore */ }
+  
+  // Try parsing just dateStr as ISO then applying time
+   try {
+    let baseDate = parseISO(dateStr);
+    if (!isValid(baseDate)) { // If dateStr is not full ISO, try yyyy-MM-dd
+        baseDate = parse(dateStr, 'yyyy-MM-dd', new Date());
+    }
+    if (isValid(baseDate)) {
+        const timeParts = timeStr.match(/(\d{1,2})[:\.]?(\d{2})?(am|pm)?/i);
+        if (timeParts) {
+            let hours = parseInt(timeParts[1], 10);
+            const minutes = timeParts[2] ? parseInt(timeParts[2], 10) : 0;
+            const period = timeParts[3]?.toLowerCase();
+
+            if (period === 'pm' && hours < 12) hours += 12;
+            if (period === 'am' && hours === 12) hours = 0; // Midnight case
+
+            const d = new Date(baseDate.getFullYear(), baseDate.getMonth(), baseDate.getDate(), hours, minutes);
+            if (isValid(d)) return d;
+        }
+    }
+  } catch { /* ignore */ }
+
 
   console.warn(`[Web UI Action] parseDateTimeWeb: Could not parse date "${dateStr}" and time "${timeStr}"`);
   return null;
@@ -46,10 +69,15 @@ function parseDateTimeWeb(dateStr?: string, timeStr?: string): Date | null {
 let isBookingPausedWeb = false;
 let pauseStartDateWeb: Date | null = null;
 let pauseEndDateWeb: Date | null = null;
+
+// Updated conversation context
 let webUiConversationContext: {
   lastIntent?: string;
-  gatheredDate?: string;
-  gatheredTime?: string;
+  gatheredDate?: string; // For booking
+  gatheredTime?: string; // For booking
+  currentContextualDate?: string; // Date of appointment being discussed (e.g. for reschedule)
+  gatheredRescheduleNewDate?: string;
+  gatheredRescheduleNewTime?: string;
 } = {};
 
 export async function handleUserMessage(messageText: string, senderType: SenderType): Promise<HandleUserMessageResult> {
@@ -58,119 +86,157 @@ export async function handleUserMessage(messageText: string, senderType: SenderT
   let responseText: string;
 
   try {
-    intentResult = await recognizeIntent({ message: messageText, senderType });
+    // Pass contextualDate if available from previous turn (e.g. for rescheduling)
+    intentResult = await recognizeIntent({ 
+      message: messageText, 
+      senderType,
+      contextualDate: webUiConversationContext.currentContextualDate 
+    });
     let { intent, entities } = intentResult;
     console.log(`[Web UI Action] handleUserMessage: recognizeIntent result - Intent: ${intent}, Entities: ${JSON.stringify(entities)}`);
 
-    // Handle follow-up context for booking
+    // Contextual updates for booking flow
     if (webUiConversationContext.lastIntent === 'book_appointment') {
-      if (!webUiConversationContext.gatheredDate && intent !== 'cancel_appointment') { // if date was expected
-        if (entities?.date) {
-          webUiConversationContext.gatheredDate = entities.date;
-          intent = 'book_appointment'; // Keep intent as booking
-          console.log(`[Web UI Action] Contextual update: Gathered date: ${entities.date}`);
-        } else if (intent === 'other' && messageText.match(/\d{1,2}(st|nd|rd|th)? (jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)/i) || messageText.match(/(today|tomorrow|next week|monday|tuesday|wednesday|thursday|friday|saturday|sunday)/i) ) {
-            // If AI failed to get date but user provided something date-like, stick to booking intent
-            intent = 'book_appointment';
-            // Let the main logic ask again, AI might pick it up next time with specific prompt.
-        }
-      } else if (webUiConversationContext.gatheredDate && !webUiConversationContext.gatheredTime && intent !== 'cancel_appointment') { // if time was expected
-        if (entities?.time) {
-          webUiConversationContext.gatheredTime = entities.time;
-          intent = 'book_appointment'; // Keep intent as booking
-          console.log(`[Web UI Action] Contextual update: Gathered time: ${entities.time}`);
-        } else if (intent === 'other' && messageText.match(/\d{1,2}(:\d{2})?\s*(am|pm)?/i) ) {
-            intent = 'book_appointment';
-        }
+      if (!webUiConversationContext.gatheredDate && entities?.date) {
+        webUiConversationContext.gatheredDate = entities.date;
+        if (intent !== 'book_appointment') intent = 'book_appointment'; // Maintain booking intent
       }
-      // If an entity was just provided for an ongoing booking, ensure the intent remains 'book_appointment'
-      if ((entities?.date || entities?.time || entities?.reason) && webUiConversationContext.lastIntent === 'book_appointment' && intent === 'other') {
-        intent = 'book_appointment';
+      if (webUiConversationContext.gatheredDate && !webUiConversationContext.gatheredTime && entities?.time) {
+        webUiConversationContext.gatheredTime = entities.time;
+        if (intent !== 'book_appointment') intent = 'book_appointment'; // Maintain booking intent
       }
+      if ((entities?.date || entities?.time || entities?.reason) && intent === 'other') {
+         intent = 'book_appointment'; // If AI got confused but provided relevant entities for booking
+      }
+    }
+    
+    // Contextual updates for rescheduling flow
+    if (webUiConversationContext.lastIntent === 'reschedule_appointment') {
+        if (entities?.date && !webUiConversationContext.gatheredRescheduleNewDate) {
+            webUiConversationContext.gatheredRescheduleNewDate = entities.date;
+            if(intent !== 'reschedule_appointment') intent = 'reschedule_appointment';
+        }
+        if (entities?.time && !webUiConversationContext.gatheredRescheduleNewTime) {
+            webUiConversationContext.gatheredRescheduleNewTime = entities.time;
+            if(intent !== 'reschedule_appointment') intent = 'reschedule_appointment';
+        }
+        // If date was provided by AI ("same day" became contextualDate) and only time is new from user
+        if (entities?.date === webUiConversationContext.currentContextualDate && entities?.time && !webUiConversationContext.gatheredRescheduleNewTime) {
+            webUiConversationContext.gatheredRescheduleNewDate = entities.date;
+            webUiConversationContext.gatheredRescheduleNewTime = entities.time;
+            if(intent !== 'reschedule_appointment') intent = 'reschedule_appointment';
+        }
     }
 
 
     switch (intent) {
       case 'book_appointment':
         webUiConversationContext.lastIntent = 'book_appointment';
-        const dateFromEntities = entities?.date || webUiConversationContext.gatheredDate;
-        const timeFromEntities = entities?.time || webUiConversationContext.gatheredTime;
-        const reasonFromEntities = entities?.reason;
+        const dateForBooking = entities?.date || webUiConversationContext.gatheredDate;
+        const timeForBooking = entities?.time || webUiConversationContext.gatheredTime;
+        const reasonForBooking = entities?.reason;
 
-        if (isBookingPausedWeb && dateFromEntities) {
+        if (isBookingPausedWeb && dateForBooking) {
            try {
-                const requestedDateObj = parse(dateFromEntities, 'yyyy-MM-dd', new Date());
+                const requestedDateObj = parse(dateForBooking, 'yyyy-MM-dd', new Date());
                 if (isValid(requestedDateObj)) {
                     const isPausedForRequestedDate =
                         (pauseStartDateWeb && pauseEndDateWeb && requestedDateObj >= pauseStartDateWeb && requestedDateObj <= pauseEndDateWeb) ||
                         (pauseStartDateWeb && !pauseEndDateWeb && format(requestedDateObj, 'yyyy-MM-dd') === format(pauseStartDateWeb, 'yyyy-MM-dd'));
-
                     if (isPausedForRequestedDate) {
                         responseText = `Bookings are currently paused for ${format(requestedDateObj, 'MMMM do')}. Please try a different date.`;
                         webUiConversationContext = {}; // Reset context
                         return { responseText, intent, entities };
                     }
                 }
-            } catch(e) {
-                console.warn(`[Web UI Action] Error parsing dateFromEntities '${dateFromEntities}' during pause check:`, e);
-            }
+            } catch(e) { console.warn(`[Web UI Action] Error parsing dateForBooking '${dateForBooking}' during pause check:`, e); }
         }
 
-        if (!dateFromEntities) {
+        if (!dateForBooking) {
           responseText = "Sure, I can help you book an appointment! What day were you thinking of?";
-          webUiConversationContext.gatheredDate = undefined; // Ensure it's waiting for date
+          webUiConversationContext.gatheredDate = undefined; 
           webUiConversationContext.gatheredTime = undefined;
+          webUiConversationContext.currentContextualDate = undefined;
         } else {
-          webUiConversationContext.gatheredDate = dateFromEntities; // Store gathered date
-          if (!timeFromEntities) {
-            try {
-              const parsedDate = parse(dateFromEntities, 'yyyy-MM-dd', new Date());
-              responseText = `Okay, for ${isValid(parsedDate) ? format(parsedDate, 'MMMM do, yyyy') : dateFromEntities}. What time would you like to come in?`;
-            } catch {
-              responseText = `Okay, for ${dateFromEntities}. What time would you like to come in?`;
-            }
-            webUiConversationContext.gatheredTime = undefined; // Ensure it's waiting for time
+          webUiConversationContext.gatheredDate = dateForBooking;
+          webUiConversationContext.currentContextualDate = dateForBooking; // Use this for any immediate follow-up context if needed
+          if (!timeForBooking) {
+            responseText = `Okay, for ${format(parse(dateForBooking, 'yyyy-MM-DD', new Date()), 'MMMM do, yyyy')}. What time would you like to come in?`;
+            webUiConversationContext.gatheredTime = undefined;
           } else {
-            webUiConversationContext.gatheredTime = timeFromEntities; // Store gathered time
-            const appointmentDateTime = parseDateTimeWeb(dateFromEntities, timeFromEntities);
-            if (!reasonFromEntities) {
-              if (appointmentDateTime) {
-                responseText = `Got it, ${format(appointmentDateTime, 'MMMM do, yyyy')} at ${format(appointmentDateTime, 'h:mm a')}. And what is the reason for your visit?`;
-              } else {
-                responseText = `Got it, for ${dateFromEntities} at ${timeFromEntities}. And what is the reason for your visit?`;
-              }
+            webUiConversationContext.gatheredTime = timeForBooking;
+            const appointmentDateTime = parseDateTimeWeb(dateForBooking, timeForBooking);
+            if (!reasonForBooking) {
+              responseText = `Got it, ${appointmentDateTime ? format(appointmentDateTime, 'MMMM do, yyyy \'at\' h:mm a') : `${dateForBooking} at ${timeForBooking}`}. And what is the reason for your visit?`;
             } else {
-              if (appointmentDateTime) {
-                responseText = `Great! Your appointment for "${reasonFromEntities}" is noted for ${format(appointmentDateTime, 'MMMM do, yyyy')} at ${format(appointmentDateTime, 'h:mm a')}. (This is a web UI test. No actual booking occurs.)`;
-              } else {
-                responseText = `Great! I have all the details: Date: ${dateFromEntities}, Time: ${timeFromEntities}, Reason: ${reasonFromEntities}. (This is a web UI test. No actual booking occurs.)`;
-              }
-              webUiConversationContext = {}; // Reset context after completion
+              responseText = `Great! Your appointment for "${reasonForBooking}" is noted for ${appointmentDateTime ? format(appointmentDateTime, 'MMMM do, yyyy \'at\' h:mm a') : `${dateForBooking} at ${timeForBooking}`}. (This is a web UI test. No actual booking occurs.)`;
+              webUiConversationContext = {}; // Reset context
             }
           }
         }
         break;
 
-      case 'reschedule_appointment':
-        responseText = `Okay, I can help with rescheduling.`;
-        if (entities?.patient_name && senderType === 'doctor') responseText += ` For patient: ${entities.patient_name}.`;
-        if (entities?.date) responseText += ` New date: ${entities.date}.`;
-        if (entities?.time) responseText += ` New time: ${entities.time}.`;
-        if (!entities?.date || !entities?.time) {
-            responseText += ` Please provide the new date and time you'd like.`;
-        } else {
-            responseText += ` (This is a web UI test. No actual rescheduling occurs.)`;
+      case 'reschedule_appointment': {
+        webUiConversationContext.lastIntent = 'reschedule_appointment';
+        const patientNameToReschedule = senderType === 'doctor' ? entities?.patient_name : undefined;
+        
+        // Date from entities could be the original appointment date OR the new desired date.
+        // Time from entities is likely the new desired time.
+        
+        let originalApptDate = entities?.date && !webUiConversationContext.gatheredRescheduleNewDate && !webUiConversationContext.gatheredRescheduleNewTime ? entities.date : webUiConversationContext.currentContextualDate;
+        let newRescheduleDate = webUiConversationContext.gatheredRescheduleNewDate || (entities?.date !== originalApptDate ? entities?.date : undefined);
+        let newRescheduleTime = webUiConversationContext.gatheredRescheduleNewTime || entities?.time;
+
+        if (originalApptDate && !webUiConversationContext.currentContextualDate) {
+            webUiConversationContext.currentContextualDate = originalApptDate;
         }
-        webUiConversationContext = {}; // Reset context
+        
+        if (patientNameToReschedule) {
+            responseText = `Okay, doctor. Rescheduling for ${patientNameToReschedule}.`;
+            if (originalApptDate) responseText += ` Original appointment on ${originalApptDate}.`;
+        } else {
+            responseText = `Okay, I can help with rescheduling.`;
+            if (originalApptDate) responseText += ` Your appointment is on ${originalApptDate}.`;
+        }
+
+        if (!newRescheduleDate && !newRescheduleTime) {
+            responseText += ` What new date and time would you like?`;
+            // Keep currentContextualDate if it's the original appointment date
+        } else if (newRescheduleDate && !newRescheduleTime) {
+            responseText += ` You've chosen ${newRescheduleDate}. What time would you like for the new appointment?`;
+            webUiConversationContext.currentContextualDate = newRescheduleDate; // Context is now the new date
+            webUiConversationContext.gatheredRescheduleNewDate = newRescheduleDate;
+        } else if (!newRescheduleDate && newRescheduleTime) { // This case implies "same day" was likely used and AI picked up contextualDate
+             if (webUiConversationContext.currentContextualDate) {
+                 newRescheduleDate = webUiConversationContext.currentContextualDate; // Assume same day
+                 webUiConversationContext.gatheredRescheduleNewDate = newRescheduleDate;
+                 webUiConversationContext.gatheredRescheduleNewTime = newRescheduleTime;
+                 const finalDateTime = parseDateTimeWeb(newRescheduleDate, newRescheduleTime);
+                 responseText = `Okay, appointment rescheduled to ${finalDateTime ? format(finalDateTime, 'MMMM do, yyyy \'at\' h:mm a') : `${newRescheduleDate} at ${newRescheduleTime}`}. (This is a web UI test.)`;
+                 webUiConversationContext = {}; // Reset context
+             } else {
+                 responseText += ` You've chosen ${newRescheduleTime}. What date would you like?`;
+                 // Keep currentContextualDate (original) or clear if not relevant
+             }
+        } else { // Both new date and time are present
+            const finalDateTime = parseDateTimeWeb(newRescheduleDate!, newRescheduleTime!);
+            responseText = `Okay, appointment rescheduled to ${finalDateTime ? format(finalDateTime, 'MMMM do, yyyy \'at\' h:mm a') : `${newRescheduleDate} at ${newRescheduleTime}`}. (This is a web UI test.)`;
+            if (patientNameToReschedule) responseText += ` For ${patientNameToReschedule}.`;
+            webUiConversationContext = {}; // Reset context
+        }
         break;
+      }
 
       case 'cancel_appointment':
+         webUiConversationContext.currentContextualDate = entities?.date || webUiConversationContext.currentContextualDate;
          if (senderType === 'doctor' && entities?.patient_name) {
-            responseText = `Okay, I understand you want to cancel the appointment for ${entities.patient_name}.`;
+            responseText = `Okay, I understand you want to cancel the appointment for ${entities.patient_name}`;
+            if(webUiConversationContext.currentContextualDate) responseText += ` on ${webUiConversationContext.currentContextualDate}`;
         } else {
-            responseText = "Okay, I understand you want to cancel your appointment.";
+            responseText = "Okay, I understand you want to cancel your appointment";
+            if(webUiConversationContext.currentContextualDate) responseText += ` on ${webUiConversationContext.currentContextualDate}`;
         }
-        responseText += " (This is a web UI test. No actual cancellation occurs.)";
+        responseText += ". (This is a web UI test. No actual cancellation occurs.)";
         webUiConversationContext = {}; // Reset context
         break;
 
@@ -248,8 +314,13 @@ Keep your responses concise and helpful. Be friendly and empathetic. If you don'
             entities: { ...(intentResult?.entities || {}), fallbackError: genErrorMessage, detail: genError.detail }
           };
         }
-        // If it's an 'other' intent but we were in a booking flow, don't reset context yet. Let user try again.
-        if (!webUiConversationContext.lastIntent) webUiConversationContext = {};
+        // If it's an 'other' intent but we were in a booking/reschedule flow, don't fully reset context yet.
+        // Only fully reset if not in a known multi-turn flow.
+        if (!webUiConversationContext.lastIntent) {
+            webUiConversationContext = {};
+        } else if (webUiConversationContext.lastIntent !== 'book_appointment' && webUiConversationContext.lastIntent !== 'reschedule_appointment') {
+            webUiConversationContext = {};
+        }
       }
     }
     return { responseText, intent: intentResult?.intent, entities: intentResult?.entities };
@@ -299,4 +370,3 @@ export async function getDailySummaryAction(): Promise<string> {
     return `Sorry, I couldn't fetch the daily summary due to an error: ${errorMessage}`;
   }
 }
-

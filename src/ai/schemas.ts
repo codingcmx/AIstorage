@@ -10,6 +10,7 @@ import {z} from 'genkit';
 export const RecognizeIntentInputSchema = z.object({
   message: z.string().describe('The message sent via WhatsApp.'),
   senderType: z.enum(['patient', 'doctor']).describe('The type of sender (patient or doctor).'),
+  contextualDate: z.string().optional().describe('A specific date YYYY-MM-DD that might be relevant for relative references like "same day", if the conversation is about a specific appointment date.'),
 });
 export type RecognizeIntentInput = z.infer<typeof RecognizeIntentInputSchema>;
 
@@ -34,3 +35,4 @@ export type RecognizeIntentOutput = z.infer<typeof RecognizeIntentFunctionOutput
 // This does NOT include `originalMessage` as it's added by the wrapper.
 export const RecognizeIntentPromptOutputSchema = RecognizeIntentFunctionOutputSchema.omit({originalMessage: true});
 export type RecognizeIntentPromptOutputType = z.infer<typeof RecognizeIntentPromptOutputSchema>;
+

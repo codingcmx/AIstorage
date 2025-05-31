@@ -25,7 +25,7 @@ export async function recognizeIntent(input: RecognizeIntentInput): Promise<Reco
   console.log('[Intent Recognition Flow] Attempting to recognize intent for:', JSON.stringify(input));
   try {
     const result = await recognizeIntentFlow({
-      ...input,
+      ...input, // message, senderType, contextualDate (if provided)
       currentDate: new Date().toISOString().split('T')[0], // Pass current date for relative date resolution
     });
     // Ensure entities is always an object, even if undefined from the flow
@@ -52,13 +52,15 @@ const prompt = ai.definePrompt({
   output: {schema: RecognizeIntentPromptOutputSchema},
   prompt: `You are an AI assistant for a doctor's clinic. Your primary task is to understand messages related to appointment management (book, reschedule, cancel) and extract relevant information.
 You should understand messages in English and Hinglish (a mix of Hindi and English).
-Today's date is {{currentDate}}. Use this to resolve relative dates like "tomorrow", "next Monday", "kal", "parso".
+Today's date is {{currentDate}}.
+{{#if contextualDate}}The current appointment being discussed (e.g., for rescheduling) is on {{contextualDate}}. If the user says "same day" or "that day" when providing a new time or detail, assume they are referring to this {{contextualDate}}.{{/if}}
+Use {{currentDate}} to resolve other relative dates like "tomorrow", "next Monday", "kal", "parso".
 The message is from a {{senderType}}.
 
 Your goal is to extract:
 1. Intent: 'book_appointment', 'reschedule_appointment', 'cancel_appointment', 'pause_bookings', 'resume_bookings', 'cancel_all_meetings_today', 'greeting', 'thank_you', 'faq_opening_hours', or 'other'.
-2. Date: In YYYY-MM-DD format.
-3. Time: In HH:mm (24-hour) format. If AM/PM is used, convert it. If "afternoon" is mentioned without a specific time, assume 14:00. If "morning", assume 10:00. If "evening", assume 18:00. "Subah" can mean morning, "dopahar" afternoon, "shaam" evening.
+2. Date: In YYYY-MM-DD format. For rescheduling, this is the NEW desired date. If "same day" is used in context of {{contextualDate}}, then the date is {{contextualDate}}.
+3. Time: In HH:mm (24-hour) format. If AM/PM is used, convert it. If "afternoon" is mentioned without a specific time, assume 14:00. If "morning", assume 10:00. If "evening", assume 18:00. "Subah" can mean morning, "dopahar" afternoon, "shaam" evening. For rescheduling, this is the NEW desired time.
 4. Reason: For 'book_appointment' intent, extract the reason for the visit if provided.
 5. Patient Name: For doctor commands like '/cancel [patient_name]' or '/reschedule [patient_name]', extract the patient_name.
 6. Start Date: For '/pause bookings from [start_date]', extract start_date.
@@ -92,6 +94,9 @@ Patient Intents & Entity Extraction (English & Hinglish):
 
 - Message: "Reschedule my appointment to next Friday"
   Output: { "intent": "reschedule_appointment", "entities": { "date": "YYYY-MM-DD (next Friday from {{currentDate}})" } }
+  
+- Message: "Reschedule my appointment on {{contextualDate}} to same day at 3pm" (assuming {{contextualDate}} is set and bot asked for new time)
+  Output: { "intent": "reschedule_appointment", "entities": { "date": "{{contextualDate}}", "time": "15:00" } }
 
 - Message: "Mera appointment agle Friday ko reschedule kar do." (Reschedule my appointment to next Friday.)
   Output: { "intent": "reschedule_appointment", "entities": { "date": "YYYY-MM-DD (next Friday from {{currentDate}})" } }
@@ -131,6 +136,15 @@ Conversational Follow-ups (After the bot has asked a question):
   User message: "Dard hai." (There is pain.)
   Output: { "intent": "book_appointment", "entities": { "reason": "Dard hai" } }
 
+- Bot asked: "Your appointment is on {{contextualDate}}. What new date and time would you like?"
+  User message: "Same day at 4pm"
+  Output: { "intent": "reschedule_appointment", "entities": { "date": "{{contextualDate}}", "time": "16:00" } }
+
+- Bot asked: "Your appointment is on {{contextualDate}}. What new date and time would you like?"
+  User message: "Next Monday at 10am"
+  Output: { "intent": "reschedule_appointment", "entities": { "date": "YYYY-MM-DD (next Monday from {{currentDate}})", "time": "10:00" } }
+
+
 Other Common Patient Intents:
 - Message: "Hello", "Hi", "Namaste" -> { "intent": "greeting", "entities": {} }
 - Message: "Thanks", "Thank you", "Dhanyawad" -> { "intent": "thank_you", "entities": {} }
@@ -161,7 +175,8 @@ Doctor Commands (senderType will be 'doctor', typically messages starting with '
 General Instructions:
 - If no specific intent from the list above is recognized, use "other".
 - Prioritize doctor commands if the message starts with '/'.
-- Parse dates relative to {{currentDate}}. If year is omitted for a date, assume current year or next year if the date has passed in the current year.
+- Parse dates relative to {{currentDate}} unless {{contextualDate}} is highly relevant (e.g. "same day").
+- If year is omitted for a date, assume current year or next year if the date has passed in the current year.
 - Convert times to HH:mm (24-hour) format.
 - Extract the reason for the visit if provided with a booking request.
 
@@ -179,18 +194,16 @@ const recognizeIntentFlow = ai.defineFlow(
     outputSchema: RecognizeIntentPromptOutputSchema, // The flow itself outputs based on the prompt's schema
   },
   async (input) => { // Input type will match recognizeIntentPromptInputSchema
-    console.log('[Intent Recognition Flow] Internal flow input (with currentDate):', JSON.stringify(input));
-    const {output} = await prompt(input); // Pass the whole input including currentDate
+    console.log('[Intent Recognition Flow] Internal flow input (with currentDate & contextualDate):', JSON.stringify(input));
+    const {output} = await prompt(input); // Pass the whole input
     if (!output) {
         console.error('[Intent Recognition Flow] Failed to produce output from AI model for message:', input.message);
-        // It's crucial to return *something* that matches RecognizeIntentPromptOutputSchema
         return {
-            intent: 'other', // Default to 'other'
-            entities: { error: 'Failed to recognize intent from AI model.'} // Provide an empty entities object or an error entity
+            intent: 'other',
+            entities: { error: 'Failed to recognize intent from AI model.'}
         }
     }
     console.log('[Intent Recognition Flow] Internal flow output from AI:', JSON.stringify(output));
-    // Ensure entities is always an object, even if AI returns null/undefined for it
     const entities = output.entities || {};
     return { ...output, entities };
   }
