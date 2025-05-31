@@ -9,7 +9,7 @@
  */
 
 import {ai} from '@/ai/genkit';
-import {z} from 'genkit'; // Added missing Zod import
+import {z} from 'genkit';
 // Import schemas and types from the new schemas.ts file
 import {
   RecognizeIntentInputSchema,
@@ -50,14 +50,15 @@ const prompt = ai.definePrompt({
   name: 'recognizeIntentPrompt',
   input: {schema: recognizeIntentPromptInputSchema},
   output: {schema: RecognizeIntentPromptOutputSchema},
-  prompt: `You are an AI assistant for a doctor's clinic. Your primary task is to understand messages related to appointment management and extract relevant information.
-Today's date is {{currentDate}}. Use this to resolve relative dates like "tomorrow", "next Monday".
+  prompt: `You are an AI assistant for a doctor's clinic. Your primary task is to understand messages related to appointment management (book, reschedule, cancel) and extract relevant information.
+You should understand messages in English and Hinglish (a mix of Hindi and English).
+Today's date is {{currentDate}}. Use this to resolve relative dates like "tomorrow", "next Monday", "kal", "parso".
 The message is from a {{senderType}}.
 
 Your goal is to extract:
 1. Intent: 'book_appointment', 'reschedule_appointment', 'cancel_appointment', 'pause_bookings', 'resume_bookings', 'cancel_all_meetings_today', 'greeting', 'thank_you', 'faq_opening_hours', or 'other'.
 2. Date: In YYYY-MM-DD format.
-3. Time: In HH:mm (24-hour) format. If AM/PM is used, convert it. If "afternoon" is mentioned without a specific time, you can assume 14:00. If "morning", assume 10:00. If "evening", assume 18:00.
+3. Time: In HH:mm (24-hour) format. If AM/PM is used, convert it. If "afternoon" is mentioned without a specific time, assume 14:00. If "morning", assume 10:00. If "evening", assume 18:00. "Subah" can mean morning, "dopahar" afternoon, "shaam" evening.
 4. Reason: For 'book_appointment' intent, extract the reason for the visit if provided.
 5. Patient Name: For doctor commands like '/cancel [patient_name]' or '/reschedule [patient_name]', extract the patient_name.
 6. Start Date: For '/pause bookings from [start_date]', extract start_date.
@@ -67,13 +68,21 @@ Output should be a JSON object.
 
 Examples:
 
-Patient Intents & Entity Extraction:
+Patient Intents & Entity Extraction (English & Hinglish):
 - Message: "I want an appointment next Monday at 2pm"
   (Assuming {{currentDate}} makes "next Monday" resolve to a specific YYYY-MM-DD)
   Output: { "intent": "book_appointment", "entities": { "date": "YYYY-MM-DD (for next Monday)", "time": "14:00" } }
 
+- Message: "Mujhe kal 2 baje ka appointment chahiye." (I want an appointment for tomorrow at 2 o'clock.)
+  (Assuming {{currentDate}} makes "kal" (tomorrow) resolve to a specific YYYY-MM-DD)
+  Output: { "intent": "book_appointment", "entities": { "date": "YYYY-MM-DD (for tomorrow from {{currentDate}})", "time": "14:00" } }
+
+- Message: "Next Monday appointment book karna hai, subah 10 baje." (I want to book an appointment for next Monday, at 10 in the morning.)
+  (Assuming {{currentDate}} makes "Next Monday" resolve to a specific YYYY-MM-DD)
+  Output: { "intent": "book_appointment", "entities": { "date": "YYYY-MM-DD (for next Monday from {{currentDate}})", "time": "10:00" } }
+
 - Message: "Can I come tomorrow afternoon?"
-  Output: { "intent": "book_appointment", "entities": { "date": "YYYY-MM-DD (for tomorrow)", "time": "14:00" } }
+  Output: { "intent": "book_appointment", "entities": { "date": "YYYY-MM-DD (for tomorrow from {{currentDate}})", "time": "14:00" } }
 
 - Message: "Book me for 2nd June at 11"
   Output: { "intent": "book_appointment", "entities": { "date": "YYYY-MM-DD (for 2nd June, ensure year based on {{currentDate}})", "time": "11:00" } }
@@ -81,14 +90,11 @@ Patient Intents & Entity Extraction:
 - Message: "I'd like to book an appointment for a tooth cleaning next Monday at 2pm."
   Output: { "intent": "book_appointment", "entities": { "date": "YYYY-MM-DD (next Monday from {{currentDate}})", "time": "14:00", "reason": "tooth cleaning" } }
 
-- Message: "Need to see the doctor for a checkup on July 25th around 10 AM."
-  Output: { "intent": "book_appointment", "entities": { "date": "YYYY-MM-DD (July 25th)", "time": "10:00", "reason": "checkup" } }
-
 - Message: "Reschedule my appointment to next Friday"
   Output: { "intent": "reschedule_appointment", "entities": { "date": "YYYY-MM-DD (next Friday from {{currentDate}})" } }
 
-- Message: "Can I reschedule my appointment to tomorrow at 3pm?"
-  Output: { "intent": "reschedule_appointment", "entities": { "date": "YYYY-MM-DD (tomorrow from {{currentDate}})", "time": "15:00" } }
+- Message: "Mera appointment agle Friday ko reschedule kar do." (Reschedule my appointment to next Friday.)
+  Output: { "intent": "reschedule_appointment", "entities": { "date": "YYYY-MM-DD (next Friday from {{currentDate}})" } }
 
 - Message: "Cancel my appointment on 3rd June"
   Output: { "intent": "cancel_appointment", "entities": { "date": "YYYY-MM-DD (for 3rd June)" } }
@@ -102,6 +108,10 @@ Conversational Follow-ups (After the bot has asked a question):
   Output: { "intent": "book_appointment", "entities": { "date": "YYYY-MM-DD (tomorrow from {{currentDate}})" } }
 
 - Bot asked: "What day were you thinking of?"
+  User message: "Kal ke liye." (For tomorrow.)
+  Output: { "intent": "book_appointment", "entities": { "date": "YYYY-MM-DD (tomorrow from {{currentDate}})" } }
+
+- Bot asked: "What day were you thinking of?"
   User message: "June 2nd"
   Output: { "intent": "book_appointment", "entities": { "date": "YYYY-MM-DD (June 2nd, infer year from {{currentDate}})" } }
 
@@ -110,16 +120,20 @@ Conversational Follow-ups (After the bot has asked a question):
   Output: { "intent": "book_appointment", "entities": { "time": "14:00" } }
 
 - Bot asked: "Okay, for [date]. What time would you like to come in?"
-  User message: "Around 10:30 in the morning"
-  Output: { "intent": "book_appointment", "entities": { "time": "10:30" } }
+  User message: "subah 10 baje" (10 in the morning)
+  Output: { "intent": "book_appointment", "entities": { "time": "10:00" } }
 
 - Bot asked: "And what is the reason for your visit?"
   User message: "A checkup"
   Output: { "intent": "book_appointment", "entities": { "reason": "A checkup" } }
 
+- Bot asked: "And what is the reason for your visit?"
+  User message: "Dard hai." (There is pain.)
+  Output: { "intent": "book_appointment", "entities": { "reason": "Dard hai" } }
+
 Other Common Patient Intents:
-- Message: "Hello", "Hi" -> { "intent": "greeting", "entities": {} }
-- Message: "Thanks", "Thank you" -> { "intent": "thank_you", "entities": {} }
+- Message: "Hello", "Hi", "Namaste" -> { "intent": "greeting", "entities": {} }
+- Message: "Thanks", "Thank you", "Dhanyawad" -> { "intent": "thank_you", "entities": {} }
 - Message: "What are your hours?" -> { "intent": "faq_opening_hours", "entities": {} }
 
 Doctor Commands (senderType will be 'doctor', typically messages starting with '/'):
