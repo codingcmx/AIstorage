@@ -63,7 +63,7 @@ The 'date' entity in your output for such a reschedule should be the *new* date.
 
 Your goal is to extract:
 1. Intent: 'book_appointment', 'reschedule_appointment', 'cancel_appointment', 'query_availability', 'pause_bookings', 'resume_bookings', 'cancel_all_meetings_today', 'greeting', 'thank_you', 'faq_opening_hours', or 'other'.
-2. Date: In YYYY-MM-DD format. For 'book_appointment', this is the desired date. For 'reschedule_appointment', this is the NEW desired date. For 'query_availability', this is the date they are asking about. If "same day" is used in context of an existing appointment on {{contextualDate}}, then the date is {{contextualDate}}.
+2. Date: In YYYY-MM-DD format. For 'book_appointment', this is the desired date. For 'reschedule_appointment', this is the NEW desired date. For 'query_availability', THIS IS THE DATE THEY ARE ASKING ABOUT - EXTRACT IT IF PRESENT. If "same day" is used in context of an existing appointment on {{contextualDate}}, then the date is {{contextualDate}}.
 3. Time: In HH:mm (24-hour) format. If AM/PM is used, convert it. If "afternoon" is mentioned without a specific time, assume 14:00. If "morning", assume 10:00. If "evening", assume 18:00. "Subah" can mean morning, "dopahar" afternoon, "shaam" evening. For rescheduling, this is the NEW desired time.
 4. Reason: For 'book_appointment' intent, extract the reason for the visit if provided.
 5. Patient Name: For doctor commands like '/cancel [patient_name]' or '/reschedule [patient_name]', extract the patient_name.
@@ -120,6 +120,8 @@ Query Availability Examples:
   Output: { "intent": "query_availability", "entities": { "date": "YYYY-MM-DD (for June 5th, use current year or next if past)" } }
 - Message: "What time slots do you have for next Monday?"
   Output: { "intent": "query_availability", "entities": { "date": "YYYY-MM-DD (next Monday from {{currentDate}})" } }
+- Message: "Query availability for July 10th 2025"
+  Output: { "intent": "query_availability", "entities": { "date": "2025-07-10" } }
 - Message: "What time slots do you have?"
   Output: { "intent": "query_availability", "entities": {} }
 - Message: "Kal koi time milega?" (Will I get any time tomorrow?)
