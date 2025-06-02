@@ -44,7 +44,9 @@ import {
   isSameDay,
   isWithinInterval,
   startOfDay,
-  endOfDay
+  endOfDay,
+  getHours,
+  getDay, // Added for weekday check
 } from 'date-fns';
 
 
@@ -73,6 +75,10 @@ export type ProcessWhatsAppMessageOutput = z.infer<
 let isBookingPaused = false;
 let pauseStartDate: Date | null = null;
 let pauseEndDate: Date | null = null;
+
+// Clinic Working Hours
+const DOCTOR_WORK_START_HOUR = 9; // 9 AM
+const DOCTOR_WORK_END_HOUR = 17; // 5 PM (exclusive, appointments must start before 5 PM)
 
 
 // Helper to parse date and time from entities, trying various formats
@@ -167,7 +173,7 @@ const processWhatsAppMessageFlow = ai.defineFlow(
             throw new Error(`Invalid timestamp string: ${input.timestamp}`);
         }
     } catch (e: any) {
-        const timestampError = `[Process Flow - ${input.senderId}] CRITICAL: Invalid or unparsable timestamp provided: "${input.timestamp}". Error: ${e.message}. Cannot process message.`;
+        const timestampError = `[Process Flow - ${input.senderId}] CRITICAL: Invalid or unparseable timestamp provided: "${input.timestamp}". Error: ${e.message}. Cannot process message.`;
         console.error(timestampError);
         try {
             await sendWhatsAppMessage(input.senderId, "I'm sorry, there was a problem with the timing of your message. Please try sending it again.");
@@ -197,7 +203,6 @@ const processWhatsAppMessageFlow = ai.defineFlow(
         message: input.messageText,
         senderType: senderType,
       });
-      // Add more detailed logging for recognized intent and entities
       console.log(`[Process Flow - ${input.senderId}] Intent Recognition Result: Intent: ${recognizedIntentData.intent}, Entities: ${JSON.stringify(recognizedIntentData.entities)}, Original Message: "${recognizedIntentData.originalMessage}"`);
 
       const {intent, entities, originalMessage} = recognizedIntentData;
@@ -206,16 +211,14 @@ const processWhatsAppMessageFlow = ai.defineFlow(
       switch (intent) {
         case 'book_appointment': {
           const reasonFromEntities = entities?.reason as string;
-          let dateFromEntities = entities?.date as string; // Expect YYYY-MM-DD from AI
-          let timeFromEntities = entities?.time as string; // Expect HH:MM or similar from AI
+          let dateFromEntities = entities?.date as string; 
+          let timeFromEntities = entities?.time as string; 
 
           console.log(`[Process Flow - ${input.senderId}] Booking: Initial entities - Date: ${dateFromEntities}, Time: ${timeFromEntities}, Reason: ${reasonFromEntities}`);
 
-
-          // Check if bookings are paused for the requested date
           if (isBookingPaused && dateFromEntities) {
             try {
-                const requestedDateObj = parseISO(dateFromEntities); // AI should give YYYY-MM-DD
+                const requestedDateObj = parseISO(dateFromEntities);
                 if (isValid(requestedDateObj)) {
                     const isPausedForRequestedDate = 
                         (pauseStartDate && pauseEndDate && isWithinInterval(requestedDateObj, { start: startOfDay(pauseStartDate), end: endOfDay(pauseEndDate) })) ||
@@ -232,15 +235,12 @@ const processWhatsAppMessageFlow = ai.defineFlow(
             }
           }
 
-
-          // Step 1: Ask for date if missing
           if (!dateFromEntities) {
             responseText = "Sure, I can help you book an appointment! What day were you thinking of?";
             console.log(`[Process Flow - ${input.senderId}] Booking: Date missing. Asking for date.`);
             break;
           }
 
-          // Step 2: Date is present, ask for time if missing
           if (!timeFromEntities) {
             responseText = `Okay, for ${dateFromEntities}. What time would you like to come in?`;
             console.log(`[Process Flow - ${input.senderId}] Booking: Time missing for date ${dateFromEntities}. Asking for time.`);
@@ -261,7 +261,20 @@ const processWhatsAppMessageFlow = ai.defineFlow(
             break;
           }
 
-          // Step 3: Date and Time are valid. Ask for reason if missing.
+          const dayOfWeek = getDay(appointmentDateTime); // 0 (Sunday) to 6 (Saturday)
+          const requestedHour = getHours(appointmentDateTime);
+
+          if (dayOfWeek === 0 || dayOfWeek === 6) { // Sunday or Saturday
+            responseText = `Sorry, the clinic is closed on weekends (${format(appointmentDateTime, 'EEEE')}). Please choose a weekday (Monday to Friday) for your appointment.`;
+            console.warn(`[Process Flow - ${input.senderId}] Booking failed: Requested day ${format(appointmentDateTime, 'EEEE')} is a weekend.`);
+            break;
+          }
+          if (requestedHour < DOCTOR_WORK_START_HOUR || requestedHour >= DOCTOR_WORK_END_HOUR) {
+            responseText = `Sorry, the requested time ${format(appointmentDateTime, 'h:mm a')} is outside our clinic hours (Mon-Fri, ${format(setHours(new Date(), DOCTOR_WORK_START_HOUR), 'h a')} - ${format(setHours(new Date(), DOCTOR_WORK_END_HOUR -1 ), 'h:mm a')}). Please choose a time within these hours.`;
+            console.warn(`[Process Flow - ${input.senderId}] Booking failed: Requested time ${format(appointmentDateTime, 'HH:mm')} is outside working hours ${DOCTOR_WORK_START_HOUR}-${DOCTOR_WORK_END_HOUR}.`);
+            break;
+          }
+
           if (!reasonFromEntities) {
             responseText = `Got it, ${format(appointmentDateTime, 'MMM d, yyyy')} at ${format(appointmentDateTime, 'h:mm a')}. And what is the reason for your visit?`;
             console.log(`[Process Flow - ${input.senderId}] Booking: Reason missing for ${format(appointmentDateTime, 'yyyy-MM-dd HH:mm')}. Asking for reason.`);
@@ -270,7 +283,6 @@ const processWhatsAppMessageFlow = ai.defineFlow(
 
           const finalReason = reasonFromEntities;
           console.log(`[Process Flow - ${input.senderId}] Booking: All details present. Date: ${dateFromEntities}, Time: ${timeFromEntities}, Reason: ${finalReason}. Parsed DateTime: ${appointmentDateTime}`);
-
 
           console.log(`[Process Flow - ${input.senderId}] Checking for conflicts for ${format(appointmentDateTime, 'yyyy-MM-dd HH:mm')}`);
           const existingAppointments = await getAppointmentsFromSheet({
@@ -331,10 +343,19 @@ const processWhatsAppMessageFlow = ai.defineFlow(
         }
 
         case 'reschedule_appointment': {
-          const newDateTime = parseDateTime(entities?.date as string, entities?.time as string);
+          let newDateEntity = entities?.date as string;
+          let newTimeEntity = entities?.time as string;
+          // If only time is provided, assume date is the contextual one from AI if available, or prompt
+          // This part is tricky without session state. The AI needs to provide date if it's a reschedule.
+          if (newTimeEntity && !newDateEntity && entities?.contextualDate) {
+              newDateEntity = entities.contextualDate;
+          }
+
+
+          const newDateTime = parseDateTime(newDateEntity, newTimeEntity);
           if (!newDateTime) {
-            responseText = `I couldn't understand the new date or time for rescheduling (date: "${entities?.date}", time: "${entities?.time}"). Please provide it clearly.`;
-            console.warn(`[Process Flow - ${input.senderId}] Reschedule failed: Unclear new date/time. Date entity: "${entities?.date}", Time entity: "${entities?.time}"`);
+            responseText = `I couldn't understand the new date or time for rescheduling (date: "${newDateEntity}", time: "${newTimeEntity}"). Please provide it clearly. If you meant to reschedule for the same day, please specify 'same day' or the date again with the new time.`;
+            console.warn(`[Process Flow - ${input.senderId}] Reschedule failed: Unclear new date/time. Date entity: "${newDateEntity}", Time entity: "${newTimeEntity}"`);
             break;
           }
           if (!isFuture(newDateTime)) {
@@ -342,6 +363,18 @@ const processWhatsAppMessageFlow = ai.defineFlow(
               console.warn(`[Process Flow - ${input.senderId}] Reschedule failed: Past new date/time. Parsed: ${newDateTime}`);
               break;
           }
+
+          const dayOfWeek = getDay(newDateTime);
+          const requestedHour = getHours(newDateTime);
+          if (dayOfWeek === 0 || dayOfWeek === 6) {
+            responseText = `Sorry, the clinic is closed on weekends (${format(newDateTime, 'EEEE')}). Please choose a weekday (Monday to Friday) for your rescheduled appointment.`;
+            break;
+          }
+          if (requestedHour < DOCTOR_WORK_START_HOUR || requestedHour >= DOCTOR_WORK_END_HOUR) {
+            responseText = `Sorry, the new time ${format(newDateTime, 'h:mm a')} is outside clinic hours (Mon-Fri, ${format(setHours(new Date(), DOCTOR_WORK_START_HOUR), 'h a')} - ${format(setHours(new Date(), DOCTOR_WORK_END_HOUR -1), 'h:mm a')}). Please choose another time.`;
+            break;
+          }
+
 
           if (isBookingPaused) {
              try {
@@ -359,7 +392,6 @@ const processWhatsAppMessageFlow = ai.defineFlow(
                 console.warn(`[Process Flow - ${input.senderId}] Error checking pause status during reschedule:`, e);
             }
           }
-
 
           if (senderType === 'patient') {
             console.log(`[Process Flow - ${input.senderId}] Patient rescheduling: Finding existing appointment.`);
@@ -478,6 +510,40 @@ const processWhatsAppMessageFlow = ai.defineFlow(
             await updateAppointmentInSheet(appointmentToCancel.rowIndex, { status: 'cancelled', notes: `${appointmentToCancel.notes || ''}\nCancelled by doctor on ${format(new Date(), 'yyyy-MM-dd HH:mm')}. WA Msg ID: ${input.messageId}` });
             await deleteCalendarEvent(appointmentToCancel.calendarEventId);
             responseText = `Appointment for ${patientNameToCancel} (${appointmentToCancel.appointmentDate} at ${appointmentToCancel.appointmentTime}) has been cancelled. You may want to notify the patient.`;
+          }
+          break;
+        }
+        
+        case 'query_availability': {
+          const dateForQuery = entities?.date as string;
+          if (!dateForQuery) {
+            responseText = "Sure, I can check availability. What date are you interested in? (e.g., 'tomorrow', 'next Monday', 'July 25th')";
+          } else {
+            const parsedQueryDate = parse(dateForQuery, 'yyyy-MM-dd', new Date());
+            if (!isValid(parsedQueryDate)) {
+              responseText = `The date "${dateForQuery}" seems invalid. Could you please provide a valid date like YYYY-MM-DD or "tomorrow"?`;
+              break;
+            }
+            if (!isFuture(startOfDay(parsedQueryDate)) && !isSameDay(startOfDay(parsedQueryDate), startOfDay(new Date()))) {
+                 responseText = `The date ${format(parsedQueryDate, 'MMMM do, yyyy')} is in the past. Please provide a current or future date for availability check.`;
+                 break;
+            }
+             if (isBookingPaused) {
+                const isPausedForQueryDate =
+                    (pauseStartDate && pauseEndDate && isWithinInterval(parsedQueryDate, { start: startOfDay(pauseStartDate), end: endOfDay(pauseEndDate) })) ||
+                    (pauseStartDate && !pauseEndDate && isSameDay(parsedQueryDate, pauseStartDate));
+                if (isPausedForQueryDate) {
+                    responseText = `I'm sorry, bookings are currently paused for ${format(parsedQueryDate, 'MMMM do')}${pauseEndDate && !isSameDay(pauseStartDate!, pauseEndDate) ? ` (paused until ${format(pauseEndDate, 'MMMM do')})` : ''}. Please try a different date.`;
+                    break;
+                }
+            }
+            const dayOfWeek = getDay(parsedQueryDate);
+            if (dayOfWeek === 0 || dayOfWeek === 6) { // Sunday or Saturday
+                responseText = `Sorry, the clinic is closed on weekends (${format(parsedQueryDate, 'EEEE')}). We are open Monday to Friday.`;
+                break;
+            }
+            // For WhatsApp, listing actual free slots is complex. Guide user instead.
+            responseText = `For ${format(parsedQueryDate, 'MMMM do, yyyy')}, you can try booking a specific time between ${format(setHours(new Date(), DOCTOR_WORK_START_HOUR),'h a')} and ${format(setHours(new Date(), DOCTOR_WORK_END_HOUR - 1),'h:mm a')}. For example, 'Book an appointment for ${format(parsedQueryDate, 'MMMM do')} at 2pm'.`;
           }
           break;
         }
@@ -609,13 +675,13 @@ const processWhatsAppMessageFlow = ai.defineFlow(
           responseText = "You're very welcome! Is there anything else I can assist you with?";
           break;
         case 'faq_opening_hours':
-          responseText = "The clinic is open from 9 AM to 5 PM, Monday to Friday. We are closed on weekends and public holidays.";
+          responseText = `The clinic is open from ${format(setHours(new Date(), DOCTOR_WORK_START_HOUR),'h a')} to ${format(setHours(new Date(), DOCTOR_WORK_END_HOUR -1 ),'h:mm a')}, Monday to Friday. We are closed on weekends and public holidays.`;
           break;
         case 'other':
         default: {
           const conversationalPrompt = `You are MediMate AI, a friendly and helpful WhatsApp assistant for Dr. [Doctor's Name]'s clinic.
 The user (a ${senderType}) sent: "${input.messageText}".
-Your primary functions are to help with booking, rescheduling, or cancelling appointments. You can also answer simple questions about the clinic like opening hours.
+Your primary functions are to help with booking, rescheduling, or cancelling appointments. You can also answer simple questions about the clinic like opening hours (Mon-Fri, ${format(setHours(new Date(), DOCTOR_WORK_START_HOUR), 'h a')} - ${format(setHours(new Date(), DOCTOR_WORK_END_HOUR -1 ), 'h:mm a')}).
 If the user's message seems related to these functions, guide them or ask for clarification.
 If the message is a general health query, provide a very brief, general, non-diagnostic piece of advice and strongly recommend booking an appointment for any medical concerns. Do NOT attempt to diagnose or give specific medical advice.
 If the message is a simple greeting or social interaction, respond politely and conversationally.
