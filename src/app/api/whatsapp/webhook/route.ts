@@ -1,7 +1,7 @@
-
 // src/app/api/whatsapp/webhook/route.ts
 import {NextResponse} from 'next/server';
 import type {NextRequest} from 'next/server';
+import { processWhatsAppMessage } from '@/ai/flows/process-whatsapp-message-flow';
 
 export async function GET(request: NextRequest) {
   console.log('\n\n---------------------------------------------------------');
@@ -71,8 +71,6 @@ export async function POST(request: NextRequest) {
                   const messageTimestamp = message.timestamp; // WhatsApp timestamp is in seconds as a string
 
                   console.log(`[WHATSAPP WEBHOOK POST] Processing text message from ${from}: "${text}" (ID: ${messageId}, Timestamp: ${messageTimestamp})`);
-                  
-                  const { processWhatsAppMessage } = await import('@/ai/flows/process-whatsapp-message-flow');
                   
                   const timestampAsDate = new Date(parseInt(messageTimestamp, 10) * 1000);
 

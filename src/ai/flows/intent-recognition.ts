@@ -1,4 +1,3 @@
-
 'use server';
 
 /**
@@ -63,10 +62,14 @@ The 'date' entity in your output for such a reschedule should be the *new* date.
 
 Your goal is to extract:
 1. Intent: 'book_appointment', 'reschedule_appointment', 'cancel_appointment', 'query_availability', 'pause_bookings', 'resume_bookings', 'cancel_all_meetings_today', 'greeting', 'thank_you', 'faq_opening_hours', or 'other'.
-2. Date: In YYYY-MM-DD format. For 'book_appointment', this is the desired date. For 'reschedule_appointment', this is the NEW desired date. For 'query_availability', THIS IS THE DATE THEY ARE ASKING ABOUT - EXTRACT IT IF PRESENT. If "same day" is used in context of an existing appointment on {{contextualDate}}, then the date is {{contextualDate}}.
-3. Time: In HH:mm (24-hour) format. If AM/PM is used, convert it. If "afternoon" is mentioned without a specific time, assume 14:00. If "morning", assume 10:00. If "evening", assume 18:00. "Subah" can mean morning, "dopahar" afternoon, "shaam" evening. For rescheduling, this is the NEW desired time.
+2. Date: In YYYY-MM-DD format. For 'book_appointment', this is the desired date. For 'reschedule_appointment', this is the NEW desired date. For 'query_availability', THIS IS THE DATE THEY ARE ASKING ABOUT - EXTRACT IT IF PRESENT. If "same day" is used in context of an existing appointment on {{contextualDate}}, then the date is {{contextualDate}}. **If the user is providing their name after being prompted, also carry over the date and time from the previous turns if they were established.**
+3. Time: In HH:mm (24-hour) format. If AM/PM is used, convert it. If "afternoon" is mentioned without a specific time, assume 14:00. If "morning", assume 10:00. If "evening", assume 18:00. "Subah" can mean morning, "dopahar" afternoon, "shaam" evening. For rescheduling, this is the NEW desired time. **If the user is providing their name after being prompted, also carry over the date and time from the previous turns if they were established.**
 4. Reason: For 'book_appointment' intent, extract the reason for the visit if provided.
-5. Patient Name: For doctor commands like '/cancel [patient_name]' or '/reschedule [patient_name]', extract the patient_name.
+5. Patient Name: For doctor commands like '/cancel [patient_name]' or '/reschedule [patient_name]', extract the patient_name. 
+
+***CRITICAL INSTRUCTION FOR PATIENT NAME HANDLING:***
+When the system has just asked the patient "Could you please provide your name for the appointment?" and the patient's subsequent message contains what appears to be their name (e.g., "John Smith", "My name is Jane Doe", "I am Bob"), you MUST identify the intent as 'book_appointment' and extract the full name into the 'patient_name' entity. This is a direct continuation of the booking flow, and the primary purpose of that message is to provide the name. Treat simple names like "Saurav Yadav" or just "Nitin" in response to the name prompt as the patient's name for the 'book_appointment' intent. **In this specific scenario, it is crucial that you also output the 'date' and 'time' entities that were established in the conversation *before* the system asked for the name. You must remember the date and time the user already specified and include them in the entities for this 'book_appointment' intent result.**
+
 6. Start Date: For '/pause bookings from [start_date]', extract start_date.
 7. End Date: For '/pause bookings from [start_date] to [end_date]', extract end_date.
 
@@ -78,6 +81,23 @@ Patient Intents & Entity Extraction (English & Hinglish):
 - Message: "I want an appointment next Monday at 2pm"
   (Assuming {{currentDate}} makes "next Monday" resolve to a specific YYYY-MM-DD)
   Output: { "intent": "book_appointment", "entities": { "date": "YYYY-MM-DD (for next Monday)", "time": "14:00" } }
+
+***Example: Providing Name After Prompt (WITH CONTEXT)***
+- System just asked: "Great! Could you please provide your name for the appointment?"
+  User previously established date as 2025-06-05 and time as 09:00.
+  User Message: "Saurav Yadav"
+  Output: { "intent": "book_appointment", "entities": { "patient_name": "Saurav Yadav", "date": "2025-06-05", "time": "09:00" } }
+
+- System just asked: "Great! Could you please provide your name for the appointment?"
+  User previously established date as 2025-06-05 and time as 09:00.
+  User Message: "My name is Nitin"
+  Output: { "intent": "book_appointment", "entities": { "patient_name": "Nitin", "date": "2025-06-05", "time": "09:00" } }
+
+- Message: "I am Saurav Yadav"
+  Output: { "intent": "book_appointment", "entities": { "patient_name": "Saurav Yadav" } }
+
+- Message: "Saurav Yadav"
+  Output: { "intent": "book_appointment", "entities": { "patient_name": "Saurav Yadav" } }
 
 - Message: "Mujhe kal 2 baje ka appointment chahiye." (I want an appointment for tomorrow at 2 o'clock.)
   (Assuming {{currentDate}} makes "kal" (tomorrow) resolve to a specific YYYY-MM-DD)
@@ -207,6 +227,7 @@ General Instructions:
 - If year is omitted for a date, assume current year or next year if the date has passed in the current year.
 - Convert times to HH:mm (24-hour) format.
 - Extract the reason for the visit if provided with a booking request.
+- ***IMPORTANT - OVERRIDE ANY OTHER INTERPRETATION HERE:*** If the system has just asked for the patient's name and the user provides what looks like a name, this message is PART of the book_appointment flow. Recognize the intent as 'book_appointment' and extract the 'patient_name' entity. **Additionally, you must output the 'date' and 'time' entities that were established in the conversation leading up to the system asking for the name.**
 
 User Message: {{{message}}}
 
