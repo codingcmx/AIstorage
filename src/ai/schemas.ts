@@ -1,16 +1,17 @@
-
 /**
  * @fileOverview Shared Zod schemas for AI flows.
  * This file does NOT use the 'use server'; directive itself, allowing it
  * to export Zod schema objects freely for use in other modules.
  */
 import {z} from 'genkit';
+import type { ConversationState } from '@/types/conversation';
 
 // Schema for input to the recognizeIntent function
 export const RecognizeIntentInputSchema = z.object({
   message: z.string().describe('The message sent via WhatsApp.'),
   senderType: z.enum(['patient', 'doctor']).describe('The type of sender (patient or doctor).'),
   contextualDate: z.string().optional().describe('A specific date YYYY-MM-DD that might be relevant for relative references like "same day", if the conversation is about a specific appointment date.'),
+  conversationState: z.custom<ConversationState | null>().optional().describe('The current conversation state, including history and booking details.'),
 });
 export type RecognizeIntentInput = z.infer<typeof RecognizeIntentInputSchema>;
 

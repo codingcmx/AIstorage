@@ -48,6 +48,7 @@ import {
   addDays,
   subDays,
 } from 'date-fns';
+import { loadConversationState, addMessageToHistory, updateFlowState, clearConversationState } from '@/lib/conversation-state';
 
 // Add type declarations for process.env
 declare global {
@@ -371,6 +372,16 @@ export async function processWhatsAppMessage(
     };
   }
 
+  // Load conversation state at the start
+  const conversationState = await loadConversationState(input.senderId);
+  console.log(`[Process Flow - ${input.senderId}] Loaded conversation state:`, conversationState);
+
+  // Add the incoming message to history
+  await addMessageToHistory(input.senderId, {
+    type: 'user',
+    text: input.messageText,
+  });
+
   console.log(`[Process Flow - ${input.senderId}] Received message: "${input.messageText}" at ${format(messageReceivedDate, 'yyyy-MM-dd HH:mm:ssXXX')}. Input:`, JSON.stringify(input));
 
   let responseText = "I'm sorry, I'm not sure how to help with that. Please try rephrasing or ask about appointments.";
@@ -384,9 +395,11 @@ export async function processWhatsAppMessage(
     const senderType = isActualDoctor ? 'doctor' : 'patient';
     console.log(`[Process Flow - ${input.senderId}] Sender type determined as: ${senderType} (Actual Doctor: ${isActualDoctor})`);
 
+    // Pass conversation state to intent recognition for better context
     recognizedIntentData = await recognizeIntent({
       message: input.messageText,
-      senderType: senderType, // Pass the correct sender type to intent recognition
+      senderType: senderType,
+      conversationState: conversationState, // Pass the state for context
     });
     console.log(`[Process Flow - ${input.senderId}] Intent Recognition Result: Intent: ${recognizedIntentData.intent}, Entities: ${JSON.stringify(recognizedIntentData.entities)}, Original Message: "${recognizedIntentData.originalMessage}"`);
 
@@ -397,19 +410,39 @@ export async function processWhatsAppMessage(
 
     switch (intent) {
       case 'book_appointment': {
-        const dateFromEntities = entities?.date as string;
-        const timeFromEntities = entities?.time as string;
-        const reasonFromEntities = entities?.reason as string;
-        const patientName = entities?.patient_name as string;
+        // Update flow state to booking
+        await updateFlowState(input.senderId, 'booking');
+
+        // Use existing booking details from state if available
+        const existingDate = conversationState?.bookingDetails?.date;
+        const existingTime = conversationState?.bookingDetails?.time;
+        const existingName = conversationState?.bookingDetails?.patientName;
+        const existingReason = conversationState?.bookingDetails?.reason;
+
+        // Get new details from current message
+        const bookingDate = entities?.date as string || existingDate;
+        const timeFromEntities = entities?.time as string || existingTime;
+        const nameFromEntities = entities?.patient_name as string || existingName;
+        const reasonFromEntities = entities?.reason as string || existingReason;
+
+        // Update booking details in state
+        if (bookingDate || timeFromEntities || nameFromEntities || reasonFromEntities) {
+          await updateFlowState(input.senderId, 'booking', {
+            date: bookingDate,
+            time: timeFromEntities,
+            patientName: nameFromEntities,
+            reason: reasonFromEntities,
+          });
+        }
 
         // Handle "today" or no date specified
-        let bookingDate = dateFromEntities;
-        if (!bookingDate || bookingDate.toLowerCase() === 'today') {
-          bookingDate = format(new Date(), 'yyyy-MM-dd');
+        let bookingDateObj = bookingDate;
+        if (!bookingDateObj || bookingDateObj.toLowerCase() === 'today') {
+          bookingDateObj = format(new Date(), 'yyyy-MM-dd');
         }
 
         if (!timeFromEntities) {
-          const parsedDate = parseISO(bookingDate);
+          const parsedDate = parseISO(bookingDateObj);
           if (isValid(parsedDate)) {
             const dayOfWeek = getDay(parsedDate);
             if (dayOfWeek === 0 || dayOfWeek === 6) {
@@ -429,13 +462,13 @@ export async function processWhatsAppMessage(
           }
         }
 
-        if (!patientName) {
+        if (!nameFromEntities) {
           responseText = `Great! Could you please provide your name for the appointment?`;
           break;
         }
 
         if (!reasonFromEntities) {
-          responseText = `Thank you ${patientName}. What is the reason for your visit?`;
+          responseText = `Thank you ${nameFromEntities}. What is the reason for your visit?`;
           break;
         }
 
@@ -560,10 +593,16 @@ export async function processWhatsAppMessage(
           });
         });
         responseText = getBilingualResponse('booking_confirmed', finalReason, appointmentStart, isHinglish);
+
+        // After successful booking, clear the conversation state
+        await clearConversationState(input.senderId);
         break;
       }
 
       case 'reschedule_appointment': {
+        // Update flow state to rescheduling
+        await updateFlowState(input.senderId, 'rescheduling');
+
         let newDateEntity = entities?.date as string;
         let newTimeEntity = entities?.time as string;
         // If only time is provided, we'll ask for the date
@@ -694,11 +733,17 @@ export async function processWhatsAppMessage(
           ]);  
           responseText = getBilingualResponse('reschedule_confirmed', newStartTime, newEndTime, isHinglish);
         }
+
+        // After successful rescheduling, clear the conversation state
+        await clearConversationState(input.senderId);
         break;
       }
 
       case 'cancel_appointment': {
-         if (senderType === 'patient') {
+        // Update flow state to cancelling
+        await updateFlowState(input.senderId, 'cancelling');
+
+        if (senderType === 'patient') {
           console.log(`[Process Flow - ${input.senderId}] Patient cancelling appointment: Finding existing appointment.`);
           const appointmentToCancel = await findAppointment({ phoneNumber: input.senderId, status: ['booked', 'pending_confirmation', 'rescheduled'] });
           if (!appointmentToCancel) {
@@ -768,6 +813,9 @@ export async function processWhatsAppMessage(
           ]);    
           responseText = getBilingualResponse('cancellation_confirmed', undefined, undefined, isHinglish);
         }
+
+        // After successful cancellation, clear the conversation state
+        await clearConversationState(input.senderId);
         break;
       }
       
@@ -999,27 +1047,33 @@ Keep your responses concise and helpful for WhatsApp. Be friendly and empathetic
     console.error(`[Process Flow - ${input.senderId}] CRITICAL ERROR in processWhatsAppMessage's main try block:`, flowError.message || String(flowError), flowError.stack);
     responseText = "I'm sorry, an internal error occurred while processing your request. Please try again in a few moments. If the problem persists, please contact the clinic directly.";
     processingErrorDetail = `Flow error: ${flowError.message || String(flowError)}. Stack: ${flowError.stack}`;
-  } finally {
-    console.log(`[Process Flow - ${input.senderId}] Attempting to send final response: "${responseText}"`);
-    try {
-      const sendResult = await sendWhatsAppMessage(input.senderId, responseText);
-      finalResponseSent = sendResult.success;
-      if (!sendResult.success) {
-        const sendErrorMessage = `Failed to send WhatsApp response: ${sendResult.error}`;
-        console.error(`[Process Flow - ${input.senderId}] ${sendErrorMessage}`);
-        if (!processingErrorDetail) {
-          processingErrorDetail = sendErrorMessage;
-        }
-      } else {
-        console.log(`[Process Flow - ${input.senderId}] WhatsApp response sent successfully. Message ID: ${sendResult.messageId}`);
-      }
-    } catch (sendException: any) {
-      const sendExceptionMessage = `Exception during sendWhatsAppMessage: ${sendException.message || String(sendException)}`;
-      console.error(`[Process Flow - ${input.senderId}] ${sendExceptionMessage}`, sendException.stack);
-      finalResponseSent = false;
+  }
+
+  // Add the system response to history
+  await addMessageToHistory(input.senderId, {
+    type: 'system',
+    text: responseText,
+  });
+
+  console.log(`[Process Flow - ${input.senderId}] Attempting to send final response: "${responseText}"`);
+  try {
+    const sendResult = await sendWhatsAppMessage(input.senderId, responseText);
+    finalResponseSent = sendResult.success;
+    if (!sendResult.success) {
+      const sendErrorMessage = `Failed to send WhatsApp response: ${sendResult.error}`;
+      console.error(`[Process Flow - ${input.senderId}] ${sendErrorMessage}`);
       if (!processingErrorDetail) {
-        processingErrorDetail = sendExceptionMessage;
+        processingErrorDetail = sendErrorMessage;
       }
+    } else {
+      console.log(`[Process Flow - ${input.senderId}] WhatsApp response sent successfully. Message ID: ${sendResult.messageId}`);
+    }
+  } catch (sendException: any) {
+    const sendExceptionMessage = `Exception during sendWhatsAppMessage: ${sendException.message || String(sendException)}`;
+    console.error(`[Process Flow - ${input.senderId}] ${sendExceptionMessage}`, sendException.stack);
+    finalResponseSent = false;
+    if (!processingErrorDetail) {
+      processingErrorDetail = sendExceptionMessage;
     }
   }
 
